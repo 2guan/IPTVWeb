@@ -1,0 +1,19 @@
+services:
+  iptv-admin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:22-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}
+    container_name: iptv-admin
+    ports:
+      - "4010:4010"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=4010
+      - JWT_SECRET=iptv-admin-secret-2026
+      - DATABASE_PATH=/app/data/iptv.sqlite
+    restart: always
