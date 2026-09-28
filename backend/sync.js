@@ -3,6 +3,7 @@ import { BEIJING_NOW_SQL } from './time.js';
 import { syncMiguBundleForSubscription } from './migu.js';
 import { deduplicateSourcesByUrl } from './deduplicate.js';
 import { buildDefaultHeaders, parseM3u, parseTxt } from './playlist.js';
+import { isMiguSource } from './tester.js';
 
 export const syncStatus = {
   running: false,
@@ -84,13 +85,31 @@ export async function syncSubscription(subId, options = {}) {
     db.exec('BEGIN TRANSACTION');
     try {
       const insertStmt = db.prepare(`
-        INSERT INTO sources (name, url, category, origin, subscription_id, channel_id, tvg_logo, request_headers, catchup, status)
-        VALUES (?, ?, ?, 'subscription', ?, ?, ?, ?, ?, 'unknown')
+        INSERT INTO sources (
+          name, url, category, origin, subscription_id, channel_id, tvg_logo, request_headers, catchup,
+          status, delay, speed, resolution, codec, isp, region
+        )
+        VALUES (?, ?, ?, 'subscription', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const updateStmt = db.prepare(`
         UPDATE sources 
         SET name = ?, category = ?, tvg_logo = ?, request_headers = ?, catchup = ?,
             channel_id = COALESCE(NULLIF(channel_id, ''), ?)
+        WHERE id = ?
+      `);
+      const updateMiguStmt = db.prepare(`
+        UPDATE sources 
+        SET name = ?, category = ?, tvg_logo = ?, request_headers = ?, catchup = ?,
+            channel_id = COALESCE(NULLIF(channel_id, ''), ?),
+            status = 'active',
+            delay = CASE WHEN delay > 0 THEN delay ELSE 50 END,
+            speed = CASE WHEN speed > 0 THEN speed ELSE 5.0 END,
+            resolution = COALESCE(NULLIF(resolution, ''), '1920x1080'),
+            codec = COALESCE(NULLIF(codec, ''), 'h264'),
+            isp = CASE WHEN isp IS NULL OR isp = '' OR isp = '未知' THEN '中国移动' ELSE isp END,
+            region = CASE WHEN region IS NULL OR region = '' OR region = '未知' THEN '全国' ELSE region END,
+            fail_count = 0,
+            frozen_until = NULL
         WHERE id = ?
       `);
 
@@ -104,12 +123,27 @@ export async function syncSubscription(subId, options = {}) {
           subscription_id: sub.id,
           subscription_name: sub.name
         });
+        const isMigu = isMiguSource({ ...item, origin: 'subscription', subscription_name: sub.name });
         if (existing) {
           // Update properties if changed
-          updateStmt.run(item.name, item.category, item.tvg_logo, item.request_headers || '', item.catchup || '', channelId, existing.id);
+          if (isMigu) {
+            updateMiguStmt.run(item.name, item.category, item.tvg_logo, item.request_headers || '', item.catchup || '', channelId, existing.id);
+          } else {
+            updateStmt.run(item.name, item.category, item.tvg_logo, item.request_headers || '', item.catchup || '', channelId, existing.id);
+          }
         } else {
           // Insert new source
-          insertStmt.run(item.name, item.url, item.category, sub.id, channelId, item.tvg_logo, item.request_headers || '', item.catchup || '');
+          insertStmt.run(
+            item.name, item.url, item.category, sub.id, channelId, item.tvg_logo,
+            item.request_headers || '', item.catchup || '',
+            isMigu ? 'active' : 'unknown',
+            isMigu ? 50 : -1,
+            isMigu ? 5.0 : 0.0,
+            isMigu ? '1920x1080' : null,
+            isMigu ? 'h264' : null,
+            isMigu ? '中国移动' : null,
+            isMigu ? '全国' : null
+          );
         }
       }
 

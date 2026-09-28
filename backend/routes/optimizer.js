@@ -49,9 +49,11 @@ router.get('/', authenticateToken, (req, res) => {
   }
   if (subscriptionId) {
     if (subscriptionId === 'manual') {
-      whereClauses.push("(s.subscription_id IS NULL AND COALESCE(s.origin, '') != 'migu')");
+      whereClauses.push("(s.subscription_id IS NULL AND COALESCE(s.origin, '') NOT IN ('migu', 'extractor'))");
+    } else if (subscriptionId === 'extractor') {
+      whereClauses.push("s.origin = 'extractor'");
     } else if (subscriptionId === 'migu') {
-      whereClauses.push("s.origin = 'migu'");
+      whereClauses.push("(s.origin = 'migu' OR s.url LIKE '%miguvideo.com%' OR s.url LIKE '%cmvideo.cn%' OR EXISTS (SELECT 1 FROM subscriptions sub WHERE sub.id = s.subscription_id AND (LOWER(sub.name) LIKE '%migu%' OR sub.name LIKE '%咪咕%')))");
     } else {
       whereClauses.push('s.subscription_id = ?');
       params.push(parseInt(subscriptionId));

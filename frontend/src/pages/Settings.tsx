@@ -5,7 +5,8 @@ import {
 } from 'antd';
 import { 
   UserAddOutlined, KeyOutlined, DeleteOutlined,
-  DownloadOutlined, UploadOutlined, RollbackOutlined
+  DownloadOutlined, UploadOutlined, RollbackOutlined,
+  CheckCircleOutlined, SyncOutlined, SafetyCertificateOutlined, ClearOutlined
 } from '@ant-design/icons';
 import api from '../utils/api';
 
@@ -215,8 +216,14 @@ export default function Settings() {
   const [rulesForm] = Form.useForm();
   const [cronForm] = Form.useForm();
   const [llmForm] = Form.useForm();
+  const [credForm] = Form.useForm();
   const [userForm] = Form.useForm();
   const [pwForm] = Form.useForm();
+
+  // Credentials test state
+  const [yspTesting, setYspTesting] = useState(false);
+  const [fengshowsTesting, setFengshowsTesting] = useState(false);
+  const [syncExtractorsLoading, setSyncExtractorsLoading] = useState(false);
 
   // Modals state
   const [userModalOpen, setUserModalOpen] = useState(false);
@@ -375,15 +382,67 @@ export default function Settings() {
         llmApiKey: res.data.llmApiKey || '',
         llmBaseUrl: res.data.llmBaseUrl || '',
         llmModelName: res.data.llmModelName || '',
+        llmEnableThinking: isEnabledSetting(res.data.llmEnableThinking),
         llmDefaultMode: res.data.llmDefaultMode || 'original',
         llmChunkSize: parseInt(res.data.llmChunkSize || 80),
         llmOptimizePrompt: res.data.llmOptimizePrompt || ''
+      });
+
+      credForm.setFieldsValue({
+        yspCookie: res.data.yspCookie || '',
+        fengshowsToken: res.data.fengshowsToken || ''
       });
 
     } catch {
       message.error('加载设置项失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleVerifyYsp = async () => {
+    const cookie = credForm.getFieldValue('yspCookie');
+    if (!cookie || !cookie.trim()) {
+      message.warning('请先在输入框中粘贴央视频 Cookie');
+      return;
+    }
+    setYspTesting(true);
+    try {
+      const res = await api.post('/api/settings/verify-ysp', { cookie: cookie.trim() });
+      message.success(res.data?.message || '央视频凭据校验成功');
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '央视频凭据校验失败');
+    } finally {
+      setYspTesting(false);
+    }
+  };
+
+  const handleVerifyFengshows = async () => {
+    const token = credForm.getFieldValue('fengshowsToken');
+    if (!token || !token.trim()) {
+      message.warning('请先在输入框中输入凤凰秀 Token');
+      return;
+    }
+    setFengshowsTesting(true);
+    try {
+      const res = await api.post('/api/settings/verify-fengshows', { token: token.trim() });
+      message.success(res.data?.message || '凤凰秀 Token 校验成功');
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '凤凰秀 Token 校验失败');
+    } finally {
+      setFengshowsTesting(false);
+    }
+  };
+
+  const handleSyncExtractors = async () => {
+    setSyncExtractorsLoading(true);
+    try {
+      const res = await api.post('/api/sources/sync-extractors');
+      message.success(`官方直采源同步成功！共更新 ${res.data?.count || 0} 个频道`);
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '同步官方直采源失败');
+    } finally {
+      setSyncExtractorsLoading(false);
     }
   };
 
@@ -399,7 +458,11 @@ export default function Settings() {
   const saveSettings = async (values: any) => {
     setLoading(true);
     try {
-      const updatedSettings = { ...settings, ...values };
+      const payload = { ...values };
+      if (typeof payload.llmEnableThinking === 'boolean') {
+        payload.llmEnableThinking = payload.llmEnableThinking ? '1' : '0';
+      }
+      const updatedSettings = { ...settings, ...payload };
       await api.post('/api/settings', updatedSettings);
       message.success('设置保存成功');
       loadSettings();
@@ -866,7 +929,15 @@ export default function Settings() {
                     <Input placeholder="例如: https://api.example.com/v1" />
                   </Form.Item>
                   <Form.Item name="llmModelName" label="Model Name (模型名称)" rules={[{ required: true, message: '请输入模型名称' }]}>
-                    <Input placeholder="例如: gpt-4o-mini" />
+                    <Input placeholder="例如: gpt-4o-mini 或 mimo-v2.5" />
+                  </Form.Item>
+                  <Form.Item 
+                    name="llmEnableThinking" 
+                    label="启用思维链 / 深度思考 (Deep Thinking)" 
+                    valuePropName="checked"
+                    tooltip="针对小米 MiMo、DeepSeek 等具备思考能力的模型。默认关闭（调用 MiMo 时自动传入 thinking: { type: 'disabled' }）。对于直播源名称和分类归一化等结构化任务，关闭思维链可大幅提升响应速度、减少 Token 消耗并避免超时。"
+                  >
+                    <Switch checkedChildren="开启" unCheckedChildren="关闭 (推荐)" />
                   </Form.Item>
                   <Form.Item name="llmDefaultMode" label="发布与导出默认数据源" rules={[{ required: true }]}>
                     <Select>
@@ -890,6 +961,184 @@ export default function Settings() {
                   </Form.Item>
                 </Form>
               </Card>
+            )
+          },
+          // Official Direct Extractors Credentials Tab
+          {
+            key: 'credentials',
+            label: '官方直采凭据',
+            children: (
+              <Space direction="vertical" size="large" style={{ width: '100%', maxWidth: 860 }}>
+                {/* Global Status Banner */}
+                <Alert
+                  type="info"
+                  showIcon
+                  icon={<SafetyCertificateOutlined />}
+                  message="官方直采凭据与画质增强说明"
+                  description={
+                    <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 8 }}>
+                      <Text>
+                        <b>零配置模式：</b>系统内置了逆向 TEA 加密与动态签名算号引擎，默认无需任何账号配置，即可开箱免费播放 63 个央视频公开频道、20 路 iPanda 珍稀大熊猫机位、4K 超高清台以及 16 路国际特色频道。
+                      </Text>
+                      <Text>
+                        <b>进阶凭据增强：</b>若您拥有央视频登录账号或需要解锁凤凰卫视 720p 官方原画（普通注册账号即可，无需 VIP），可在下方填入凭据。配置完成后，系统将自动使用持久登录态取流。
+                      </Text>
+                      <div style={{ marginTop: 6 }}>
+                        <Button
+                          type="primary"
+                          icon={<SyncOutlined />}
+                          loading={syncExtractorsLoading}
+                          onClick={handleSyncExtractors}
+                        >
+                          立即重新同步官方直采源
+                        </Button>
+                      </div>
+                    </Space>
+                  }
+                />
+
+                {/* Form for Yangshipin & Fengshows */}
+                <Form
+                  form={credForm}
+                  layout="vertical"
+                  onFinish={saveSettings}
+                >
+                  {/* Yangshipin Card */}
+                  <Card
+                    variant="borderless"
+                    className="glass-card"
+                    title={
+                      <Space>
+                        <Text strong style={{ fontSize: 16 }}>央视频（Yangshipin）登录凭据</Text>
+                        {settings.yspCookie ? (
+                          <Tag color="success">已配置登录态 (含自动续期与版权防护)</Tag>
+                        ) : (
+                          <Tag color="processing">公开访客模式 (63个频道免登录)</Tag>
+                        )}
+                      </Space>
+                    }
+                    extra={
+                      <Space>
+                        <Button
+                          icon={<CheckCircleOutlined />}
+                          loading={yspTesting}
+                          onClick={handleVerifyYsp}
+                        >
+                          校验 Cookie
+                        </Button>
+                        <Button
+                          icon={<ClearOutlined />}
+                          danger
+                          onClick={() => {
+                            credForm.setFieldsValue({ yspCookie: '' });
+                            saveSettings({ yspCookie: '' });
+                          }}
+                        >
+                          清空
+                        </Button>
+                      </Space>
+                    }
+                  >
+                    <Alert
+                      type="warning"
+                      style={{ marginBottom: 16 }}
+                      showIcon
+                      message="如何获取央视频 Cookie？（详细步骤指引）"
+                      description={
+                        <ol style={{ margin: 0, paddingLeft: 18, lineHeight: '1.8', fontSize: 13 }}>
+                          <li>在电脑浏览器（Chrome / Edge / Safari）中打开 <a href="https://www.yangshipin.cn/" target="_blank" rel="noreferrer">央视频官网 (yangshipin.cn)</a> 并登录您的账号。</li>
+                          <li>按键盘 <code>F12</code>（Mac 快捷键 <code>⌥⌘I</code>）打开开发者工具，切换至 <b>Network（网络）</b> 标签页。</li>
+                          <li>刷新页面，在过滤框中输入 <code>yangshipin.cn</code>，点击列表中任意一个请求条目。</li>
+                          <li>在右侧 <b>Headers（标头）</b> 面板中找到 <b>Request Headers（请求标头）</b> 下的 <b><code>Cookie:</code></b>。</li>
+                          <li>完整复制冒号后面的整段字符串（必须包含 <code>vusession</code>、<code>guid</code>、<code>vdevice_token</code> 等字段）。</li>
+                          <li>粘贴至下方文本框，点击右上方「校验 Cookie」并在通过后点击底部「保存官方直采凭据」。</li>
+                        </ol>
+                      }
+                    />
+
+                    <Form.Item
+                      name="yspCookie"
+                      label="完整 Request Cookie"
+                      tooltip="包含 HttpOnly 会话凭据的完整 Cookie。凭据仅保存在您的本地数据库中，用于与央视频官方接口鉴权通信。"
+                    >
+                      <TextArea
+                        rows={4}
+                        placeholder="在此粘贴从浏览器开发者工具复制的完整 Cookie 字符串，例如：guid=xxx; vusession=xxx; vdevice_token=xxx; ..."
+                      />
+                    </Form.Item>
+                  </Card>
+
+                  {/* Fengshows Card */}
+                  <Card
+                    variant="borderless"
+                    className="glass-card"
+                    style={{ marginTop: 24 }}
+                    title={
+                      <Space>
+                        <Text strong style={{ fontSize: 16 }}>凤凰秀（Fengshows）授权凭据</Text>
+                        {settings.fengshowsToken ? (
+                          <Tag color="success">已配置 Token (解锁 720p 高清)</Tag>
+                        ) : (
+                          <Tag color="processing">公开游客模式 (默认 480p 标清)</Tag>
+                        )}
+                      </Space>
+                    }
+                    extra={
+                      <Space>
+                        <Button
+                          icon={<CheckCircleOutlined />}
+                          loading={fengshowsTesting}
+                          onClick={handleVerifyFengshows}
+                        >
+                          校验 Token
+                        </Button>
+                        <Button
+                          icon={<ClearOutlined />}
+                          danger
+                          onClick={() => {
+                            credForm.setFieldsValue({ fengshowsToken: '' });
+                            saveSettings({ fengshowsToken: '' });
+                          }}
+                        >
+                          清空
+                        </Button>
+                      </Space>
+                    }
+                  >
+                    <Alert
+                      type="warning"
+                      style={{ marginBottom: 16 }}
+                      showIcon
+                      message="如何获取凤凰秀 Token？（无需付费 VIP，普通注册账号即可）"
+                      description={
+                        <ol style={{ margin: 0, paddingLeft: 18, lineHeight: '1.8', fontSize: 13 }}>
+                          <li>在电脑浏览器中访问 <a href="https://www.fengshows.com/" target="_blank" rel="noreferrer">凤凰秀官网 (fengshows.com)</a> 或使用手机 App 登录（<b>普通免费账号即可解锁 720p</b>）。</li>
+                          <li>按键盘 <code>F12</code> 打开开发者工具，切换至 <b>Network（网络）</b> 标签页。</li>
+                          <li>刷新页面或点击任意直播台，在请求列表中找到域名为 <code>api.fengshows.cn</code> 的请求。</li>
+                          <li>在右侧 <b>Request Headers（请求标头）</b> 中找到 <b><code>fengshows-token</code></b> 或 <code>authorization</code>。</li>
+                          <li>复制该 Token 值粘贴到下方输入框，点击右上方「校验 Token」并保存。</li>
+                        </ol>
+                      }
+                    />
+
+                    <Form.Item
+                      name="fengshowsToken"
+                      label="凤凰秀 fengshows-token"
+                      tooltip="普通账号 Token 即可解锁凤凰卫视资讯、中文、香港台 720p / 25 帧高清直播源。"
+                    >
+                      <Input.Password
+                        placeholder="在此粘贴 fengshows-token，例如：eyJhbGciOi... 或 64位哈希字符串"
+                      />
+                    </Form.Item>
+                  </Card>
+
+                  <div style={{ marginTop: 24 }}>
+                    <Button type="primary" htmlType="submit" loading={loading} size="large">
+                      保存官方直采凭据
+                    </Button>
+                  </div>
+                </Form>
+              </Space>
             )
           },
           // Backup & Restore Tab

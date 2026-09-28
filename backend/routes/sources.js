@@ -1,7 +1,7 @@
 import express from 'express';
 import db, { run, query, queryOne, resolveStableChannelId } from '../db.js';
 import { authenticateToken } from '../middleware.js';
-import { runTestOnSources, testStatus } from '../tester.js';
+import { runTestOnSources, testStatus, isMiguSource } from '../tester.js';
 import { deduplicateSourcesByUrl } from '../deduplicate.js';
 import { parseM3u, parseTxt, stringifyJsonObject } from '../playlist.js';
 
@@ -103,9 +103,11 @@ router.get('/', authenticateToken, (req, res) => {
   }
   if (subscriptionId) {
     if (subscriptionId === 'manual') {
-      whereClauses.push("(s.subscription_id IS NULL AND COALESCE(s.origin, '') != 'migu')");
+      whereClauses.push("(s.subscription_id IS NULL AND COALESCE(s.origin, '') NOT IN ('migu', 'extractor'))");
+    } else if (subscriptionId === 'extractor') {
+      whereClauses.push("s.origin = 'extractor'");
     } else if (subscriptionId === 'migu') {
-      whereClauses.push("s.origin = 'migu'");
+      whereClauses.push("(s.origin = 'migu' OR s.url LIKE '%miguvideo.com%' OR s.url LIKE '%cmvideo.cn%' OR EXISTS (SELECT 1 FROM subscriptions sub WHERE sub.id = s.subscription_id AND (LOWER(sub.name) LIKE '%migu%' OR sub.name LIKE '%咪咕%')))");
     } else {
       whereClauses.push('s.subscription_id = ?');
       params.push(parseInt(subscriptionId));
@@ -277,8 +279,11 @@ router.post('/import', authenticateToken, (req, res) => {
     db.exec('BEGIN TRANSACTION');
     try {
       const insertStmt = db.prepare(`
-        INSERT INTO sources (name, url, category, origin, channel_id, tvg_logo, request_headers, catchup, ipv_type)
-        VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?)
+        INSERT INTO sources (
+          name, url, category, origin, channel_id, tvg_logo, request_headers, catchup, ipv_type,
+          status, delay, speed, resolution, codec, isp, region
+        )
+        VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const isM3u = content.includes('#EXTM3U');
@@ -286,7 +291,24 @@ router.post('/import', authenticateToken, (req, res) => {
       for (const item of parsedItems) {
         const ipvType = item.url.includes('[') || item.url.includes('ipv6') ? 'ipv6' : 'ipv4';
         const channelId = resolveStableChannelId({ ...item, origin: 'manual' });
-        insertStmt.run(item.name, item.url, item.category, channelId, item.tvg_logo || '', item.request_headers || '', item.catchup || '', ipvType);
+        const isMigu = isMiguSource(item);
+        insertStmt.run(
+          item.name,
+          item.url,
+          item.category,
+          channelId,
+          item.tvg_logo || '',
+          item.request_headers || '',
+          item.catchup || '',
+          ipvType,
+          isMigu ? 'active' : 'unknown',
+          isMigu ? 50 : -1,
+          isMigu ? 5.0 : 0.0,
+          isMigu ? '1920x1080' : null,
+          isMigu ? 'h264' : null,
+          isMigu ? '中国移动' : null,
+          isMigu ? '全国' : null
+        );
         imported++;
       }
 

@@ -168,13 +168,22 @@ export async function syncMiguSources({ subscriptionId, subscription, baseUrl } 
   const activeUrls = new Set();
 
   const insertStmt = db.prepare(`
-    INSERT INTO sources (name, url, category, origin, subscription_id, channel_id, tvg_logo, ipv_type, status, delay, speed)
-    VALUES (?, ?, ?, 'migu', ?, ?, ?, 'ipv4', 'active', -1, 0)
+    INSERT INTO sources (name, url, category, origin, subscription_id, channel_id, tvg_logo, ipv_type, status, delay, speed, resolution, codec, isp, region)
+    VALUES (?, ?, ?, 'migu', ?, ?, ?, 'ipv4', 'active', 50, 5.0, '1920x1080', 'h264', '中国移动', '全国')
   `);
   const updateStmt = db.prepare(`
     UPDATE sources
     SET name = ?, category = ?, tvg_logo = ?, ipv_type = 'ipv4',
-        channel_id = COALESCE(NULLIF(channel_id, ''), ?)
+        channel_id = COALESCE(NULLIF(channel_id, ''), ?),
+        status = 'active',
+        delay = CASE WHEN delay > 0 THEN delay ELSE 50 END,
+        speed = CASE WHEN speed > 0 THEN speed ELSE 5.0 END,
+        resolution = COALESCE(NULLIF(resolution, ''), '1920x1080'),
+        codec = COALESCE(NULLIF(codec, ''), 'h264'),
+        isp = CASE WHEN isp IS NULL OR isp = '' OR isp = '未知' THEN '中国移动' ELSE isp END,
+        region = CASE WHEN region IS NULL OR region = '' OR region = '未知' THEN '全国' ELSE region END,
+        fail_count = 0,
+        frozen_until = NULL
     WHERE id = ?
   `);
   const deleteStmt = db.prepare('DELETE FROM sources WHERE id = ?');
@@ -316,13 +325,22 @@ export async function syncMiguSportsSources({ subscriptionId, subscription, base
   const activeUrls = new Set();
 
   const insertStmt = db.prepare(`
-    INSERT INTO sources (name, url, category, origin, subscription_id, channel_id, tvg_logo, ipv_type, status, delay, speed)
-    VALUES (?, ?, ?, 'migu', ?, ?, ?, 'ipv4', 'active', -1, 0)
+    INSERT INTO sources (name, url, category, origin, subscription_id, channel_id, tvg_logo, ipv_type, status, delay, speed, resolution, codec, isp, region)
+    VALUES (?, ?, ?, 'migu', ?, ?, ?, 'ipv4', 'active', 50, 5.0, '1920x1080', 'h264', '中国移动', '全国')
   `);
   const updateStmt = db.prepare(`
     UPDATE sources
     SET name = ?, category = ?, tvg_logo = ?, ipv_type = 'ipv4',
-        channel_id = COALESCE(NULLIF(channel_id, ''), ?)
+        channel_id = COALESCE(NULLIF(channel_id, ''), ?),
+        status = 'active',
+        delay = CASE WHEN delay > 0 THEN delay ELSE 50 END,
+        speed = CASE WHEN speed > 0 THEN speed ELSE 5.0 END,
+        resolution = COALESCE(NULLIF(resolution, ''), '1920x1080'),
+        codec = COALESCE(NULLIF(codec, ''), 'h264'),
+        isp = CASE WHEN isp IS NULL OR isp = '' OR isp = '未知' THEN '中国移动' ELSE isp END,
+        region = CASE WHEN region IS NULL OR region = '' OR region = '未知' THEN '全国' ELSE region END,
+        fail_count = 0,
+        frozen_until = NULL
     WHERE id = ?
   `);
   const deleteStmt = db.prepare('DELETE FROM sources WHERE id = ?');

@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { queryOne } from './db.js';
+import { run, queryOne } from './db.js';
 import { buildStreamHeaders } from './playlist.js';
+import { requestYangshipinUrl, YANGSHIPIN_CHANNELS } from './extractors/yangshipin.js';
 
 // Cache segment mapping: segKey -> { url, headers, expires }
 const segmentCache = new Map();
@@ -35,17 +36,40 @@ export async function handleHlsProxyIndex(req, res) {
     return res.status(404).json({ error: '直播源不存在' });
   }
 
-  const requestedUrl = req.query.url ? decodeURIComponent(req.query.url) : source.url;
+  let requestedUrl = req.query.url ? decodeURIComponent(req.query.url) : source.url;
   const headers = buildStreamHeaders({}, source);
 
   try {
-    const upstreamRes = await fetch(requestedUrl, {
+    let upstreamRes = await fetch(requestedUrl, {
       signal: AbortSignal.timeout(10000),
       headers: {
         ...headers,
         'Accept': '*/*'
       }
     });
+
+    if (!upstreamRes.ok && (source.channel_id || '').startsWith('ysp-') && !req.query.url) {
+      const yspId = source.channel_id.replace(/^ysp-/, '');
+      const ch = YANGSHIPIN_CHANNELS.find(c => c.id === yspId);
+      if (ch) {
+        try {
+          const freshUrl = await requestYangshipinUrl(ch);
+          if (freshUrl) {
+            requestedUrl = freshUrl;
+            run('UPDATE sources SET url = ? WHERE id = ?', freshUrl, source.id);
+            upstreamRes = await fetch(requestedUrl, {
+              signal: AbortSignal.timeout(10000),
+              headers: {
+                ...headers,
+                'Accept': '*/*'
+              }
+            });
+          }
+        } catch (refreshErr) {
+          console.warn('[HlsProxy] Refresh YSP error:', refreshErr.message);
+        }
+      }
+    }
 
     if (!upstreamRes.ok) {
       return res.status(upstreamRes.status).send(`Upstream HTTP ${upstreamRes.status}`);

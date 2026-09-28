@@ -629,6 +629,8 @@ export default function OptimizedSources() {
               allowClear
             >
               <Select.Option value="manual">手动导入</Select.Option>
+              <Select.Option value="extractor">官方直采</Select.Option>
+              <Select.Option value="migu">咪咕专区</Select.Option>
               {(filters.subscriptions || []).map((sub: any) => (
                 <Select.Option key={sub.id} value={sub.id.toString()}>{sub.name}</Select.Option>
               ))}

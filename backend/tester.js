@@ -491,7 +491,10 @@ export function isMiguSource(source) {
   if (!source) return false;
   if (source.origin === 'migu') return true;
   const url = String(source.url || '');
-  return /miguvideo\.com|cmvideo\.cn/i.test(url);
+  if (/miguvideo\.com|cmvideo\.cn/i.test(url)) return true;
+  const subName = String(source.subscription_name || '');
+  if (/migu/i.test(subName) || subName.includes('咪咕')) return true;
+  return false;
 }
 
 /**

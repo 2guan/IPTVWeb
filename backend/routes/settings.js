@@ -1,9 +1,11 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import db, { run, query } from '../db.js';
+import db, { run, query, queryOne } from '../db.js';
 import { authenticateToken, requireAdmin } from '../middleware.js';
 import { updateScheduler } from '../scheduler.js';
 import { exportBackup, importBackup, rollbackBackup, hasRollbackSnapshot } from '../configBackup.js';
+import { verifyYangshipinCookie } from '../extractors/yangshipin.js';
+import { verifyFengshowsToken } from '../extractors/fengshows.js';
 
 const router = express.Router();
 const CRON_SETTING_KEYS = ['syncCron', 'testCron', 'epgCron', 'optimizeCron'];
@@ -177,6 +179,42 @@ router.post('/backup/rollback', authenticateToken, requireAdmin, (req, res) => {
 // 10. Check if rollback snapshot is available
 router.get('/backup/status', authenticateToken, (req, res) => {
   res.json({ hasSnapshot: hasRollbackSnapshot() });
+});
+
+// 11. Verify Yangshipin Cookie
+router.post('/verify-ysp', authenticateToken, async (req, res) => {
+  try {
+    let cookie = req.body?.cookie;
+    if (!cookie) {
+      const row = queryOne("SELECT value FROM settings WHERE key = 'yspCookie'");
+      cookie = row?.value || '';
+    }
+    if (!cookie) {
+      return res.status(400).json({ error: '未提供央视频 Cookie，请先在输入框中粘贴 Cookie' });
+    }
+    const result = await verifyYangshipinCookie(cookie);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message || '央视频凭据校验失败' });
+  }
+});
+
+// 12. Verify Fengshows Token
+router.post('/verify-fengshows', authenticateToken, async (req, res) => {
+  try {
+    let token = req.body?.token;
+    if (!token) {
+      const row = queryOne("SELECT value FROM settings WHERE key = 'fengshowsToken'");
+      token = row?.value || '';
+    }
+    if (!token) {
+      return res.status(400).json({ error: '未提供凤凰秀 Token，请先在输入框中填入 Token' });
+    }
+    const result = await verifyFengshowsToken(token);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message || '凤凰秀凭据校验失败' });
+  }
 });
 
 export default router;

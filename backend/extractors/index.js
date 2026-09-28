@@ -6,12 +6,26 @@ import db, { run, query, queryOne } from '../db.js';
 import { extractLotusTv } from './lotustv.js';
 import { extractQuanzhou } from './quanzhou.js';
 import { extractSichuan } from './sichuan.js';
+import { extractIPanda } from './ipanda.js';
+import { extractMeizhou } from './meizhou.js';
+import { extractNative4K } from './native4k.js';
+import { extractSongjiang } from './songjiang.js';
+import { extractYangshipin } from './yangshipin.js';
+import { extractAsianLive } from './asianlive.js';
+import { extractFengshows } from './fengshows.js';
 
 export async function runAllExtractors() {
   const results = await Promise.allSettled([
     extractLotusTv(),
     extractQuanzhou(),
-    extractSichuan()
+    extractSichuan(),
+    extractIPanda(),
+    extractMeizhou(),
+    extractNative4K(),
+    extractSongjiang(),
+    extractYangshipin(),
+    extractAsianLive(),
+    extractFengshows()
   ]);
 
   const allChannels = [];

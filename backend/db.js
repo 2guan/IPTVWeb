@@ -194,6 +194,7 @@ export function initDb() {
     llmApiKey: process.env.LLM_API_KEY || '',
     llmBaseUrl: process.env.LLM_BASE_URL || '',
     llmModelName: process.env.LLM_MODEL_NAME || '',
+    llmEnableThinking: process.env.LLM_ENABLE_THINKING || '0',
     llmDefaultMode: process.env.LLM_DEFAULT_MODE || 'original',
     llmChunkSize: process.env.LLM_CHUNK_SIZE || '80',
     llmOptimizePrompt: process.env.LLM_OPTIMIZE_PROMPT || DEFAULT_LLM_OPTIMIZE_PROMPT
@@ -212,6 +213,7 @@ export function initDb() {
     llmApiKey: process.env.LLM_API_KEY || '',
     llmBaseUrl: process.env.LLM_BASE_URL || '',
     llmModelName: process.env.LLM_MODEL_NAME || '',
+    llmEnableThinking: process.env.LLM_ENABLE_THINKING || '',
     llmDefaultMode: process.env.LLM_DEFAULT_MODE || '',
     llmChunkSize: process.env.LLM_CHUNK_SIZE || '',
     llmOptimizePrompt: process.env.LLM_OPTIMIZE_PROMPT || ''
@@ -229,6 +231,7 @@ export function initDb() {
   seedDefaultSubscriptions();
   migrateLegacyMiguSettingsToSubscription();
   backfillChannelIds();
+  repairMiguSources();
 }
 
 function ensureColumn(table, column, definition) {
@@ -325,6 +328,38 @@ function backfillChannelIds() {
       updateOptimized.run(channelId, source.id);
     }
   }
+}
+
+function repairMiguSources() {
+  db.exec(`
+    UPDATE sources
+    SET status = 'active',
+        delay = CASE WHEN delay > 0 THEN delay ELSE 50 END,
+        speed = CASE WHEN speed > 0 THEN speed ELSE 5.0 END,
+        resolution = COALESCE(NULLIF(resolution, ''), '1920x1080'),
+        codec = COALESCE(NULLIF(codec, ''), 'h264'),
+        isp = CASE WHEN isp IS NULL OR isp = '' OR isp = '未知' THEN '中国移动' ELSE isp END,
+        region = CASE WHEN region IS NULL OR region = '' OR region = '未知' THEN '全国' ELSE region END,
+        fail_count = 0,
+        frozen_until = NULL
+    WHERE origin = 'migu'
+       OR url LIKE '%miguvideo.com%'
+       OR url LIKE '%cmvideo.cn%'
+       OR subscription_id IN (SELECT id FROM subscriptions WHERE LOWER(name) LIKE '%migu%' OR name LIKE '%咪咕%');
+
+    UPDATE optimized_sources
+    SET status = 'active',
+        delay = CASE WHEN delay > 0 THEN delay ELSE 50 END,
+        speed = CASE WHEN speed > 0 THEN speed ELSE 5.0 END,
+        resolution = COALESCE(NULLIF(resolution, ''), '1920x1080'),
+        codec = COALESCE(NULLIF(codec, ''), 'h264'),
+        isp = CASE WHEN isp IS NULL OR isp = '' OR isp = '未知' THEN '中国移动' ELSE isp END,
+        region = CASE WHEN region IS NULL OR region = '' OR region = '未知' THEN '全国' ELSE region END
+    WHERE origin = 'migu'
+       OR url LIKE '%miguvideo.com%'
+       OR url LIKE '%cmvideo.cn%'
+       OR subscription_id IN (SELECT id FROM subscriptions WHERE LOWER(name) LIKE '%migu%' OR name LIKE '%咪咕%');
+  `);
 }
 
 export function rememberChannelIdentity(row = {}) {
