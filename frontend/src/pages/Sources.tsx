@@ -26,6 +26,9 @@ function getSourceLabel(record: any) {
   if (record.origin === 'migu') {
     return { text: '咪咕', color: 'magenta' };
   }
+  if (record.origin === 'extractor') {
+    return { text: '官方直采', color: 'cyan' };
+  }
   return { text: '手动导入', color: 'orange' };
 }
 
