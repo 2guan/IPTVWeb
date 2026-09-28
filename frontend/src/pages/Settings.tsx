@@ -437,7 +437,7 @@ export default function Settings() {
   const handleSyncExtractors = async () => {
     setSyncExtractorsLoading(true);
     try {
-      const res = await api.post('/api/sources/sync-extractors');
+      const res = await api.post('/api/subscriptions/sync-official');
       message.success(`官方直采源同步成功！共更新 ${res.data?.count || 0} 个频道`);
     } catch (err: any) {
       message.error(err.response?.data?.error || '同步官方直采源失败');

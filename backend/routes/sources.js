@@ -4,8 +4,23 @@ import { authenticateToken } from '../middleware.js';
 import { runTestOnSources, testStatus, isMiguSource } from '../tester.js';
 import { deduplicateSourcesByUrl } from '../deduplicate.js';
 import { parseM3u, parseTxt, stringifyJsonObject } from '../playlist.js';
+import { syncOfficialExtractors } from '../extractors/index.js';
 
 const router = express.Router();
+
+// Trigger official extractors sync
+router.post('/sync-extractors', authenticateToken, async (req, res) => {
+  try {
+    const result = await syncOfficialExtractors();
+    res.json({
+      message: `官方直采源同步成功，共发现并更新 ${result.count} 个频道。`,
+      count: result.count,
+      channels: result.channels
+    });
+  } catch (error) {
+    res.status(500).json({ error: '同步官方直采源失败: ' + error.message });
+  }
+});
 
 // Get dashboard stats
 router.get('/stats', authenticateToken, (req, res) => {
