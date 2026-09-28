@@ -49,53 +49,56 @@ function getExportCategorySortInfo(category = '') {
   if (categoryMatchesAny(text, ['卫视', '地方卫视', '各省卫视'])) {
     return { groupRank: 1, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['北京', 'bj', 'beijing'])) {
+  if (categoryMatchesAny(text, ['4k', '8k', '超高清', '超清', 'uhd', '2160p'])) {
     return { groupRank: 2, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['港澳台', '港台', '香港', '澳门', '台湾', 'hk', 'hongkong', 'macau', 'taiwan', 'tw'])) {
+  if (categoryMatchesAny(text, ['北京', 'bj', 'beijing'])) {
     return { groupRank: 3, provinceRank: -1, normalized };
   }
-  if (normalized === 'us' || categoryMatchesAny(text, ['美国', '美洲', 'usa', 'unitedstates', 'united states'])) {
+  if (categoryMatchesAny(text, ['港澳台', '港台', '香港', '澳门', '台湾', 'hk', 'hongkong', 'macau', 'taiwan', 'tw'])) {
     return { groupRank: 4, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['日本', 'jp', 'japan'])) {
+  if (normalized === 'us' || categoryMatchesAny(text, ['美国', '美洲', 'usa', 'unitedstates', 'united states'])) {
     return { groupRank: 5, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['韩国', 'kr', 'korea'])) {
+  if (categoryMatchesAny(text, ['日本', 'jp', 'japan'])) {
     return { groupRank: 6, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['国际', '海外', '境外', 'world', 'global', 'international', 'foreign'])) {
+  if (categoryMatchesAny(text, ['韩国', 'kr', 'korea'])) {
     return { groupRank: 7, provinceRank: -1, normalized };
+  }
+  if (categoryMatchesAny(text, ['国际', '海外', '境外', 'world', 'global', 'international', 'foreign'])) {
+    return { groupRank: 8, provinceRank: -1, normalized };
   }
 
   const provinceRank = PROVINCE_CATEGORY_ORDER.findIndex(name => text.includes(name.toLowerCase()));
   if (provinceRank !== -1) {
-    return { groupRank: 8, provinceRank, normalized };
+    return { groupRank: 9, provinceRank, normalized };
   }
 
   if (categoryMatchesAny(text, ['景区', '风景', '旅游'])) {
-    return { groupRank: 9, provinceRank: -1, normalized };
-  }
-  if (categoryMatchesAny(text, ['直播', 'live'])) {
     return { groupRank: 10, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['电影', '影院', '影视', 'movie', 'film'])) {
+  if (categoryMatchesAny(text, ['直播', 'live'])) {
     return { groupRank: 11, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['广播', '电台', 'radio'])) {
+  if (categoryMatchesAny(text, ['电影', '影院', '影视', 'movie', 'film'])) {
     return { groupRank: 12, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['音乐', 'music', 'mv', 'mtv'])) {
+  if (categoryMatchesAny(text, ['广播', '电台', 'radio'])) {
     return { groupRank: 13, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['游戏', '电竞', 'game'])) {
+  if (categoryMatchesAny(text, ['音乐', 'music', 'mv', 'mtv'])) {
     return { groupRank: 14, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['其它', '其他', '未分类', 'misc'])) {
+  if (categoryMatchesAny(text, ['游戏', '电竞', 'game'])) {
     return { groupRank: 15, provinceRank: -1, normalized };
   }
+  if (categoryMatchesAny(text, ['其它', '其他', '未分类', 'misc'])) {
+    return { groupRank: 16, provinceRank: -1, normalized };
+  }
 
-  return { groupRank: 16, provinceRank: -1, normalized };
+  return { groupRank: 17, provinceRank: -1, normalized };
 }
 
 function compareExportCategories(a = '', b = '') {

@@ -7,7 +7,7 @@ export async function extractNative4K() {
     {
       name: '东方卫视4K',
       url: 'https://bp-resource-dfl.bestv.cn/148/3/video.m3u8',
-      category: '卫视',
+      category: '4K',
       channel_id: 'cctv-dfws-4k',
       tvg_logo: 'https://gcore.jsdelivr.net/gh/taksssss/tv@main/icon/东方卫视.png',
       origin: 'extractor',
@@ -16,7 +16,7 @@ export async function extractNative4K() {
     {
       name: '浙江卫视4K',
       url: 'http://ali-xwl.cztv.com/live/channel4k2160p.m3u8',
-      category: '卫视',
+      category: '4K',
       channel_id: 'cctv-zjws-4k',
       tvg_logo: 'https://gcore.jsdelivr.net/gh/taksssss/tv@main/icon/浙江卫视.png',
       origin: 'extractor',
@@ -25,7 +25,7 @@ export async function extractNative4K() {
     {
       name: '湖南卫视4K',
       url: 'http://hlsal-ldvt.qing.mgtv.com/nn_live/nn_x64/Y2RuZXhfaWQ9YWxfaGxzX2xkdnQmZT02OTE0NjA0JnY9MSZpZD1ITldTWkdTVCZzPTcwN2RiYTc2YzJjNmJmMTQ4MmUyZGYzOWU2NWM3YWFi/HNWSZGST.m3u8',
-      category: '卫视',
+      category: '4K',
       channel_id: 'cctv-hnws-4k',
       tvg_logo: 'https://gcore.jsdelivr.net/gh/taksssss/tv@main/icon/湖南卫视.png',
       origin: 'extractor',

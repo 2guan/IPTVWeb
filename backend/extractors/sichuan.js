@@ -88,7 +88,7 @@ export async function extractSichuan() {
         channels.push({
           name,
           url: finalUrl,
-          category: '四川',
+          category: (name.includes('4K') || name.includes('超高清')) ? '4K' : '四川',
           channel_id: `sctv-${id}`,
           tvg_logo: logo,
           origin: 'extractor',
