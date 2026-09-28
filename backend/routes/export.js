@@ -439,8 +439,8 @@ function formatAsM3u(req, sources) {
         })
         .map(item => {
           let streamUrl = item.url;
-          if (isProxyMode && item.id) {
-            if (streamUrl.includes('.flv')) {
+          if (item.id && (isProxyMode || streamUrl.includes('.flv') || streamUrl.includes('fengshows.cn') || item.channel_id?.startsWith('fengshows-'))) {
+            if (streamUrl.includes('.flv') || streamUrl.includes('fengshows.cn') || item.channel_id?.startsWith('fengshows-')) {
               streamUrl = `${origin}/stream/flv/${item.id}`;
             } else if (streamUrl.includes('.m3u8')) {
               streamUrl = `${origin}/stream/proxy/${item.id}/index.m3u8`;
@@ -514,8 +514,8 @@ function formatAsTxt(req, sources) {
     for (const src of items) {
       const rawUrls = Array.isArray(src.urls) && src.urls.length > 0 ? src.urls : [src.url].filter(Boolean);
       const urls = rawUrls.map(u => {
-        if (isProxyMode && src.id) {
-          if (u.includes('.flv')) return `${origin}/stream/flv/${src.id}`;
+        if (src.id && (isProxyMode || u.includes('.flv') || u.includes('fengshows.cn') || src.channel_id?.startsWith('fengshows-'))) {
+          if (u.includes('.flv') || u.includes('fengshows.cn') || src.channel_id?.startsWith('fengshows-')) return `${origin}/stream/flv/${src.id}`;
           if (u.includes('.m3u8')) return `${origin}/stream/proxy/${src.id}/index.m3u8`;
         }
         return u;

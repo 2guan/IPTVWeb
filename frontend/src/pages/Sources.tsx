@@ -1065,7 +1065,11 @@ export default function Sources() {
       {/* Video Preview Modal */}
       <VideoPreviewModal
         open={previewOpen}
-        url={previewRecord?.url || ''}
+        url={
+          previewRecord?.url?.includes('.flv') || previewRecord?.channel_id?.startsWith('fengshows-')
+            ? `/stream/flv/${previewRecord.id}`
+            : (previewRecord?.url || '')
+        }
         title={previewRecord ? `${previewRecord.name} — 预览` : '频道预览'}
         onClose={() => { setPreviewOpen(false); setPreviewRecord(null); }}
       />

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal, Spin, Alert, Tag, Space, Typography } from 'antd';
 import Hls from 'hls.js';
+import mpegts from 'mpegts.js';
 
 const { Text } = Typography;
 
@@ -12,12 +13,13 @@ interface VideoPreviewModalProps {
 }
 
 /**
- * VideoPreviewModal — plays IPTV streams (HLS/m3u8 via hls.js, or native video).
+ * VideoPreviewModal — plays IPTV streams (HLS/m3u8 via hls.js, FLV via mpegts.js, or native video).
  * Supports IPv4 and IPv6 URLs transparently via the browser's native network stack.
  */
 export default function VideoPreviewModal({ open, url, title, onClose }: VideoPreviewModalProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const mpegtsRef = useRef<mpegts.Player | null>(null);
   const mediaRecoveredRef = useRef(false);
   const networkRecoveredRef = useRef(false);
   const [loading, setLoading] = useState(true);
@@ -29,7 +31,7 @@ export default function VideoPreviewModal({ open, url, title, onClose }: VideoPr
     const lower = u.toLowerCase().split('?')[0];
     if (lower.endsWith('.m3u8') || lower.includes('/hls/') || lower.includes('m3u8')) return 'HLS (m3u8)';
     if (lower.endsWith('.ts')) return 'MPEG-TS';
-    if (lower.endsWith('.flv')) return 'FLV';
+    if (lower.endsWith('.flv') || lower.includes('/stream/flv/')) return 'FLV';
     if (lower.startsWith('rtmp')) return 'RTMP';
     return 'Direct';
   };
@@ -48,15 +50,56 @@ export default function VideoPreviewModal({ open, url, title, onClose }: VideoPr
     mediaRecoveredRef.current = false;
     networkRecoveredRef.current = false;
 
-    // Destroy previous hls instance
+    // Destroy previous player instances
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
+    if (mpegtsRef.current) {
+      mpegtsRef.current.destroy();
+      mpegtsRef.current = null;
+    }
 
+    const isFlv = /\.flv/i.test(url) || /\/stream\/flv\//i.test(url);
     const isHls = /\.m3u8/i.test(url) || /\/hls\//i.test(url) || /m3u8/i.test(url);
 
-    if (isHls && Hls.isSupported()) {
+    if (isFlv && mpegts.isSupported()) {
+      try {
+        const flvPlayer = mpegts.createPlayer({
+          type: 'flv',
+          isLive: true,
+          url: playbackUrl,
+        }, {
+          enableWorker: true,
+          lazyLoad: false,
+          liveBufferLatencyChasing: true,
+        });
+        mpegtsRef.current = flvPlayer;
+        flvPlayer.attachMediaElement(video);
+        flvPlayer.load();
+        const playPromise = flvPlayer.play();
+        if (playPromise && typeof playPromise.then === 'function') {
+          playPromise.then(() => setLoading(false)).catch(() => {});
+        } else {
+          setLoading(false);
+        }
+
+        video.addEventListener('loadedmetadata', () => {
+          setLoading(false);
+        }, { once: true });
+        video.addEventListener('canplay', () => {
+          setLoading(false);
+        }, { once: true });
+
+        flvPlayer.on(mpegts.Events.ERROR, (errType: any, errDetail: any) => {
+          setLoading(false);
+          setError(`FLV 播放错误: ${errType} (${errDetail})`);
+        });
+      } catch (err: any) {
+        setLoading(false);
+        setError(`FLV 播放器初始化失败: ${err.message}`);
+      }
+    } else if (isHls && Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
@@ -122,6 +165,10 @@ export default function VideoPreviewModal({ open, url, title, onClose }: VideoPr
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      if (mpegtsRef.current) {
+        mpegtsRef.current.destroy();
+        mpegtsRef.current = null;
+      }
       video.src = '';
     };
   }, [open, url, openTick]);
@@ -130,6 +177,10 @@ export default function VideoPreviewModal({ open, url, title, onClose }: VideoPr
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
+    }
+    if (mpegtsRef.current) {
+      mpegtsRef.current.destroy();
+      mpegtsRef.current = null;
     }
     if (videoRef.current) {
       videoRef.current.pause();

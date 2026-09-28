@@ -1,6 +1,7 @@
 import { once } from 'node:events';
-import { queryOne } from './db.js';
+import { queryOne, run } from './db.js';
 import { buildStreamHeaders } from './playlist.js';
+import { requestFengshowsLiveUrl } from './extractors/fengshows.js';
 
 /**
  * 轻量级 HTTP-FLV 直通管道 (零转码、零 CPU 占用)
@@ -125,8 +126,25 @@ export async function handleFlvProxyRoute(req, res) {
     return res.status(404).json({ error: '直播源不存在' });
   }
 
+  let streamUrl = source.url;
+
+  // On-demand dynamic token refresh for Fengshows channels
+  if (source.channel_id?.startsWith('fengshows-')) {
+    try {
+      const freshUrl = await requestFengshowsLiveUrl(source.channel_id);
+      if (freshUrl) {
+        streamUrl = freshUrl;
+        try {
+          run('UPDATE sources SET url = ? WHERE id = ?', freshUrl, source.id);
+        } catch {}
+      }
+    } catch (err) {
+      console.warn('[FlvProxy] Dynamic refresh for Fengshows failed:', err.message);
+    }
+  }
+
   const headers = buildStreamHeaders({}, source);
-  await pipeFlvStream(source.url, req, res, headers);
+  await pipeFlvStream(streamUrl, req, res, headers);
 }
 
 export default {

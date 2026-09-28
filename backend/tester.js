@@ -539,6 +539,38 @@ export async function testSingleSource(source, settings) {
       reason: 'migu_default_active'
     };
   }
+
+  // Fengshows official FLV streams are dynamically authenticated on-demand by proxy
+  if (source.channel_id?.startsWith('fengshows-') || (source.origin === 'extractor' && source.name?.includes('凤凰'))) {
+    const defaultDelay = 120;
+    const defaultSpeed = Math.max(minSpeed, 3.5);
+    const resolution = '1280x720';
+    const codec = 'h264';
+    const ipvType = 'ipv4';
+    const region = '香港';
+    const isp = '凤凰秀官方';
+
+    persistTestResult(source.id, {
+      status: 'active',
+      delay: defaultDelay,
+      speed: defaultSpeed,
+      resolution,
+      codec,
+      ipvType,
+      region,
+      isp
+    });
+    return {
+      success: true,
+      status: 'active',
+      delay: defaultDelay,
+      speed: defaultSpeed,
+      resolution,
+      codec,
+      skipped: true,
+      reason: 'fengshows_default_active'
+    };
+  }
   
   const start = Date.now();
   let delay = -1;

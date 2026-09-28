@@ -90,7 +90,55 @@ export async function verifyFengshowsToken(token) {
   };
 }
 
+/**
+ * 按频道标识动态向上游换取最新的有效授权播放地址
+ */
+export async function requestFengshowsLiveUrl(channelKeyOrId, customToken = null) {
+  let token = customToken;
+  if (token === null) {
+    try {
+      const row = queryOne("SELECT value FROM settings WHERE key = 'fengshowsToken'");
+      token = row?.value || '';
+    } catch {
+      token = '';
+    }
+  }
+
+  const cleanKey = String(channelKeyOrId || '').replace(/^fengshows-/, '');
+  const ch = CHANNELS.find(c => c.key === cleanKey || c.id === channelKeyOrId || `fengshows-${c.key}` === channelKeyOrId);
+  if (!ch) {
+    throw new Error(`未知的凤凰秀频道标识: ${channelKeyOrId}`);
+  }
+
+  const API = 'https://api.fengshows.cn/';
+  const CLIENT = 'app(fs-web,1000000);';
+  const url = new URL('hub/live/auth-url', API);
+  url.searchParams.set('live_qa', 'hd');
+  url.searchParams.set('live_id', ch.id);
+
+  const headers = { Accept: 'application/json', 'fengshows-client': CLIENT };
+  if (token) {
+    const cleanToken = token.trim();
+    headers['fengshows-token'] = cleanToken;
+    headers['authorization'] = cleanToken.toLowerCase().startsWith('bearer ') ? cleanToken : `Bearer ${cleanToken}`;
+  }
+
+  const response = await fetch(url, {
+    headers,
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const body = await response.json();
+  const ticket = body?.status === undefined ? body : body.data;
+  if (!ticket?.live_url) {
+    throw new Error('未能从凤凰秀官方获取到有效播放地址');
+  }
+  return ticket.live_url;
+}
+
 export default {
   extractFengshows,
-  verifyFengshowsToken
+  verifyFengshowsToken,
+  requestFengshowsLiveUrl,
+  CHANNELS
 };
