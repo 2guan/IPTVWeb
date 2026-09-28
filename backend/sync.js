@@ -1,5 +1,8 @@
-import db, { run, query, queryOne } from './db.js';
+import db, { run, query, queryOne, resolveStableChannelId } from './db.js';
 import { BEIJING_NOW_SQL } from './time.js';
+import { syncMiguBundleForSubscription } from './migu.js';
+import { deduplicateSourcesByUrl } from './deduplicate.js';
+import { buildDefaultHeaders, parseM3u, parseTxt } from './playlist.js';
 
 export const syncStatus = {
   running: false,
@@ -7,104 +10,10 @@ export const syncStatus = {
 };
 
 /**
- * Normalizes a channel name
- */
-function normalizeChannelName(name) {
-  if (!name) return '未知频道';
-  return name.trim().replace(/\r/g, '');
-}
-
-/**
- * Parses M3U content
- */
-function parseM3u(content, defaultCategory = '其他频道') {
-  const lines = content.split('\n');
-  const items = [];
-  let currentItem = null;
-  let currentCategory = defaultCategory;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-
-    if (line.startsWith('#EXTM3U')) {
-      continue;
-    }
-
-    if (line.startsWith('#EXTINF:')) {
-      // Extract name (last part after comma)
-      const commaIndex = line.lastIndexOf(',');
-      const name = commaIndex !== -1 ? normalizeChannelName(line.substring(commaIndex + 1)) : '未知频道';
-      
-      // Extract group-title (category)
-      const groupMatch = line.match(/group-title="([^"]+)"/i);
-      const category = groupMatch ? groupMatch[1].trim() : currentCategory;
-      
-      // Extract tvg-logo
-      const logoMatch = line.match(/tvg-logo="([^"]+)"/i);
-      const logo = logoMatch ? logoMatch[1].trim() : '';
-
-      currentItem = { name, category, tvg_logo: logo };
-    } else if (line.startsWith('#') && !line.startsWith('#EXTINF:')) {
-      // Skip other comment lines
-      continue;
-    } else {
-      // This is the URL line
-      if (currentItem) {
-        currentItem.url = line;
-        items.push(currentItem);
-        currentItem = null;
-      }
-    }
-  }
-
-  return items;
-}
-
-/**
- * Parses TXT content (Category,#genre# and Name,URL)
- */
-function parseTxt(content, defaultCategory = '其他频道') {
-  const lines = content.split('\n');
-  const items = [];
-  let currentCategory = defaultCategory;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line || line.startsWith('#')) continue;
-
-    if (line.includes('#genre#')) {
-      // e.g. 央视频道,#genre#
-      const parts = line.split(',');
-      if (parts.length > 0 && parts[0].trim()) {
-        currentCategory = parts[0].trim().replace(/[-_\s📺📡☘️]/g, '');
-      }
-      continue;
-    }
-
-    // Check for comma separator (support both English and Chinese commas)
-    const separatorIndex = line.indexOf(',') !== -1 ? line.indexOf(',') : line.indexOf('，');
-    if (separatorIndex !== -1) {
-      const name = normalizeChannelName(line.substring(0, separatorIndex));
-      const url = line.substring(separatorIndex + 1).trim();
-      if (name && url && url.startsWith('http')) {
-        items.push({
-          name,
-          url,
-          category: currentCategory,
-          tvg_logo: ''
-        });
-      }
-    }
-  }
-
-  return items;
-}
-
-/**
  * Synchronize a single subscription
  */
-export async function syncSubscription(subId) {
+export async function syncSubscription(subId, options = {}) {
+  const { deduplicateAfter = true } = options;
   const sub = queryOne('SELECT * FROM subscriptions WHERE id = ?', subId);
   if (!sub) {
     throw new Error('Subscription not found');
@@ -114,6 +23,14 @@ export async function syncSubscription(subId) {
   run("UPDATE subscriptions SET status = 'fetching', error_message = NULL WHERE id = ?", sub.id);
 
   try {
+    if (sub.source_type === 'migu') {
+      const result = await syncMiguBundleForSubscription(sub.id);
+      run(`UPDATE subscriptions SET status = 'success', last_fetched_at = ${BEIJING_NOW_SQL} WHERE id = ?`, sub.id);
+      const deduplicated = deduplicateAfter ? deduplicateSourcesByUrl() : null;
+      console.log(`Migu subscription ${sub.name} sync successful. Channels: ${result.channels.total}, sports: ${result.sports.total}, deduplicated: ${deduplicated?.deleted || 0}`);
+      return { ...result, deduplicated };
+    }
+
     // 1. Fetch content
     const ua = sub.user_agent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
     const response = await fetch(sub.url, {
@@ -128,7 +45,8 @@ export async function syncSubscription(subId) {
     
     // 2. Parse content based on format detection
     const isM3u = content.includes('#EXTM3U') || sub.url.includes('.m3u') || sub.url.includes('.m3u8');
-    const parsedItems = isM3u ? parseM3u(content, sub.name) : parseTxt(content, sub.name);
+    const defaultHeaders = buildDefaultHeaders(sub.user_agent || '');
+    const parsedItems = isM3u ? parseM3u(content, sub.name, defaultHeaders) : parseTxt(content, sub.name, defaultHeaders);
 
     if (parsedItems.length === 0) {
       throw new Error('No valid channels found in subscription');
@@ -166,12 +84,13 @@ export async function syncSubscription(subId) {
     db.exec('BEGIN TRANSACTION');
     try {
       const insertStmt = db.prepare(`
-        INSERT INTO sources (name, url, category, origin, subscription_id, tvg_logo, status)
-        VALUES (?, ?, ?, 'subscription', ?, ?, 'unknown')
+        INSERT INTO sources (name, url, category, origin, subscription_id, channel_id, tvg_logo, request_headers, catchup, status)
+        VALUES (?, ?, ?, 'subscription', ?, ?, ?, ?, ?, 'unknown')
       `);
       const updateStmt = db.prepare(`
         UPDATE sources 
-        SET name = ?, category = ?, tvg_logo = ?
+        SET name = ?, category = ?, tvg_logo = ?, request_headers = ?, catchup = ?,
+            channel_id = COALESCE(NULLIF(channel_id, ''), ?)
         WHERE id = ?
       `);
 
@@ -179,12 +98,18 @@ export async function syncSubscription(subId) {
         activeUrls.add(item.url);
         
         const existing = existingMap.get(item.url);
+        const channelId = resolveStableChannelId({
+          ...item,
+          origin: 'subscription',
+          subscription_id: sub.id,
+          subscription_name: sub.name
+        });
         if (existing) {
           // Update properties if changed
-          updateStmt.run(item.name, item.category, item.tvg_logo, existing.id);
+          updateStmt.run(item.name, item.category, item.tvg_logo, item.request_headers || '', item.catchup || '', channelId, existing.id);
         } else {
           // Insert new source
-          insertStmt.run(item.name, item.url, item.category, sub.id, item.tvg_logo);
+          insertStmt.run(item.name, item.url, item.category, sub.id, channelId, item.tvg_logo, item.request_headers || '', item.catchup || '');
         }
       }
 
@@ -203,7 +128,12 @@ export async function syncSubscription(subId) {
     }
 
     run(`UPDATE subscriptions SET status = 'success', last_fetched_at = ${BEIJING_NOW_SQL} WHERE id = ?`, sub.id);
-    console.log(`Subscription ${sub.name} sync successful. Total sources: ${filteredItems.length}`);
+    const deduplicated = deduplicateAfter ? deduplicateSourcesByUrl() : null;
+    console.log(`Subscription ${sub.name} sync successful. Total sources: ${filteredItems.length}, deduplicated: ${deduplicated?.deleted || 0}`);
+    return {
+      total: filteredItems.length,
+      deduplicated
+    };
   } catch (err) {
     console.error(`Subscription sync failed for ${sub.name}:`, err.message);
     run("UPDATE subscriptions SET status = 'failed', error_message = ? WHERE id = ?", err.message, sub.id);
@@ -226,12 +156,13 @@ export async function syncAllSubscriptions() {
     const subs = query('SELECT id FROM subscriptions WHERE auto_update = 1');
     for (const sub of subs) {
       try {
-        await syncSubscription(sub.id);
+        await syncSubscription(sub.id, { deduplicateAfter: false });
       } catch (err) {
         // Continue with other subscriptions even if one fails
       }
     }
-    syncStatus.message = '订阅源同步完成！';
+    const deduplicated = deduplicateSourcesByUrl();
+    syncStatus.message = `订阅源同步完成！已全量去重，清理 ${deduplicated.deleted} 个重复 URL。`;
   } catch (err) {
     syncStatus.message = '订阅同步失败: ' + err.message;
   } finally {

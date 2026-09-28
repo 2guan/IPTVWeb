@@ -2,6 +2,11 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { query, queryOne } from '../db.js';
+import { formatExtinfCatchupAttributes, parseJsonObject } from '../playlist.js';
+import { ensureChannelId } from '../channelIdentity.js';
+import { resolveLibraryLogo, DEFAULT_LOGO_BASE_URL } from '../logoLibrary.js';
+import { matchBlockRule, matchGroupWildcard } from '../hiddenRules.js';
+import { getAnnouncementM3uItem, getAnnouncementTxtItem } from '../announcement.js';
 
 const router = express.Router();
 
@@ -10,6 +15,8 @@ function escapeM3uAttr(val) {
   if (!val) return '';
   return val.replace(/"/g, '\\"');
 }
+
+const DEFAULT_M3U_HTTP_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const PROVINCE_CATEGORY_ORDER = [
   '上海', '天津', '重庆', '河北', '山西', '辽宁', '吉林', '黑龙江',
@@ -48,44 +55,47 @@ function getExportCategorySortInfo(category = '') {
   if (categoryMatchesAny(text, ['港澳台', '港台', '香港', '澳门', '台湾', 'hk', 'hongkong', 'macau', 'taiwan', 'tw'])) {
     return { groupRank: 3, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['日本', 'jp', 'japan'])) {
+  if (normalized === 'us' || categoryMatchesAny(text, ['美国', '美洲', 'usa', 'unitedstates', 'united states'])) {
     return { groupRank: 4, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['韩国', 'kr', 'korea'])) {
+  if (categoryMatchesAny(text, ['日本', 'jp', 'japan'])) {
     return { groupRank: 5, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['国际', '海外', '境外', 'world', 'global', 'international', 'foreign'])) {
+  if (categoryMatchesAny(text, ['韩国', 'kr', 'korea'])) {
     return { groupRank: 6, provinceRank: -1, normalized };
+  }
+  if (categoryMatchesAny(text, ['国际', '海外', '境外', 'world', 'global', 'international', 'foreign'])) {
+    return { groupRank: 7, provinceRank: -1, normalized };
   }
 
   const provinceRank = PROVINCE_CATEGORY_ORDER.findIndex(name => text.includes(name.toLowerCase()));
   if (provinceRank !== -1) {
-    return { groupRank: 7, provinceRank, normalized };
+    return { groupRank: 8, provinceRank, normalized };
   }
 
   if (categoryMatchesAny(text, ['景区', '风景', '旅游'])) {
-    return { groupRank: 8, provinceRank: -1, normalized };
-  }
-  if (categoryMatchesAny(text, ['直播', 'live'])) {
     return { groupRank: 9, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['电影', '影院', '影视', 'movie', 'film'])) {
+  if (categoryMatchesAny(text, ['直播', 'live'])) {
     return { groupRank: 10, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['广播', '电台', 'radio'])) {
+  if (categoryMatchesAny(text, ['电影', '影院', '影视', 'movie', 'film'])) {
     return { groupRank: 11, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['音乐', 'music', 'mv', 'mtv'])) {
+  if (categoryMatchesAny(text, ['广播', '电台', 'radio'])) {
     return { groupRank: 12, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['游戏', '电竞', 'game'])) {
+  if (categoryMatchesAny(text, ['音乐', 'music', 'mv', 'mtv'])) {
     return { groupRank: 13, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['其它', '其他', '未分类', 'misc'])) {
+  if (categoryMatchesAny(text, ['游戏', '电竞', 'game'])) {
     return { groupRank: 14, provinceRank: -1, normalized };
   }
+  if (categoryMatchesAny(text, ['其它', '其他', '未分类', 'misc'])) {
+    return { groupRank: 15, provinceRank: -1, normalized };
+  }
 
-  return { groupRank: 15, provinceRank: -1, normalized };
+  return { groupRank: 16, provinceRank: -1, normalized };
 }
 
 function compareExportCategories(a = '', b = '') {
@@ -114,7 +124,55 @@ function normalizeDelayForSort(delay) {
   return parsed > 0 ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
+function getCctvNameSortInfo(name = '') {
+  const raw = String(name || '').trim();
+  const normalized = raw
+    .toUpperCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/-+/g, '-');
+  const cctvNumberMatch = normalized.match(/^CCTV-?0?(\d{1,2})(?:$|[^A-Z0-9+])/);
+
+  if (cctvNumberMatch) {
+    const channelNumber = Number(cctvNumberMatch[1]);
+    if (channelNumber >= 1 && channelNumber <= 17) {
+      return { rank: 0, channelNumber, name: raw };
+    }
+  }
+
+  if (/^CCTV/i.test(raw)) {
+    return { rank: 1, channelNumber: Number.MAX_SAFE_INTEGER, name: raw };
+  }
+
+  if (/^CGTN/i.test(raw)) {
+    return { rank: 2, channelNumber: Number.MAX_SAFE_INTEGER, name: raw };
+  }
+
+  if (/^[\u3400-\u9fff·（）()《》、，。—\-_\s]+$/.test(raw) && /[\u3400-\u9fff]/.test(raw)) {
+    return { rank: 3, channelNumber: Number.MAX_SAFE_INTEGER, name: raw };
+  }
+
+  return { rank: 4, channelNumber: Number.MAX_SAFE_INTEGER, name: raw };
+}
+
+function compareCctvNamesForExport(a = '', b = '') {
+  const aInfo = getCctvNameSortInfo(a);
+  const bInfo = getCctvNameSortInfo(b);
+
+  if (aInfo.rank !== bInfo.rank) {
+    return aInfo.rank - bInfo.rank;
+  }
+  if (aInfo.channelNumber !== bInfo.channelNumber) {
+    return aInfo.channelNumber - bInfo.channelNumber;
+  }
+
+  return aInfo.name.localeCompare(bInfo.name, 'zh-Hans-CN', { numeric: true });
+}
+
 function compareSourceQualityForExport(a, b) {
+  const aIsMigu = String(a.origin || '').toLowerCase() === 'migu';
+  const bIsMigu = String(b.origin || '').toLowerCase() === 'migu';
+  if (aIsMigu !== bIsMigu) return aIsMigu ? -1 : 1;
+
   const statusCompare = getStatusSortRank(a.status) - getStatusSortRank(b.status);
   if (statusCompare !== 0) return statusCompare;
 
@@ -128,10 +186,93 @@ function compareSourcesForExport(a, b) {
   const categoryCompare = compareExportCategories(a.category, b.category);
   if (categoryCompare !== 0) return categoryCompare;
 
-  const nameCompare = String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
+  const categoryInfo = getExportCategorySortInfo(a.category);
+  const nameCompare = categoryInfo.groupRank === 0
+    ? compareCctvNamesForExport(a.name, b.name)
+    : String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
   if (nameCompare !== 0) return nameCompare;
 
   return compareSourceQualityForExport(a, b);
+}
+
+function normalizeChannelKey(src) {
+  return String(src?.name || '').toLowerCase().trim();
+}
+
+function chooseExportChannelId(groupItems = []) {
+  const ids = groupItems
+    .map(item => ensureChannelId(item))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  return ids[0] || '';
+}
+
+function buildExportChannel(groupItems, logoRepo, req = null) {
+  groupItems.sort(compareSourceQualityForExport);
+  const primary = groupItems[0];
+  const channelId = chooseExportChannelId(groupItems);
+
+  let tvgLogo = primary.tvg_logo || '';
+  if (!tvgLogo) {
+    const resolved = resolveLibraryLogo(primary.name, primary.category, logoRepo || DEFAULT_LOGO_BASE_URL);
+    if (resolved) {
+      if (resolved.startsWith('/') && req) {
+        tvgLogo = `${getRequestOrigin(req)}${resolved}`;
+      } else {
+        tvgLogo = resolved;
+      }
+    }
+  }
+
+  return {
+    ...primary,
+    channel_id: channelId,
+    tvg_logo: tvgLogo,
+    url_items: groupItems
+      .filter(item => item.url)
+      .map(item => ({
+        ...item,
+        channel_id: channelId,
+        tvg_logo: item.tvg_logo || tvgLogo
+      })),
+    urls: groupItems.map(item => item.url).filter(Boolean)
+  };
+}
+
+function formatBeijingTimestamp(date = new Date()) {
+  const shifted = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const month = shifted.getUTCMonth() + 1;
+  const day = shifted.getUTCDate();
+  const time = shifted.toISOString().slice(11, 19);
+  return `${month}-${day} ${time}`;
+}
+
+function getRequestOrigin(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const proto = forwardedProto || req.protocol || 'http';
+  const host = forwardedHost || req.get('host') || '';
+  return host ? `${proto}://${host}` : '';
+}
+
+function buildEpgUrl(req) {
+  const origin = getRequestOrigin(req);
+  const token = req.query.token ? `?token=${encodeURIComponent(req.query.token)}` : '';
+  return `${origin}/epg.xml${token}`;
+}
+
+function buildHlsUrl(req, sourceId) {
+  return `${getRequestOrigin(req)}/stream/hls/${sourceId}/index.m3u8`;
+}
+
+function verifyExportToken(req) {
+  const settings = Object.fromEntries(query('SELECT key, value FROM settings').map(r => [r.key, r.value]));
+  const token = req.query.token;
+  const configToken = settings.exportToken || '';
+  if (configToken && token !== configToken) {
+    throw new Error('403 Forbidden: Invalid export token');
+  }
+  return settings;
 }
 
 /**
@@ -179,8 +320,21 @@ function getExportData(req, ipvLimit = null, defaultFormat = 'm3u') {
     sources = query('SELECT * FROM sources');
   }
 
+  const blockRules = settings.blockRules || '';
+  const hiddenGroupRules = settings.hiddenGroupRules || '';
+
   // 4. Apply filters
   sources = sources.filter(src => {
+    // Hidden group wildcard rule (e.g. 体育-*)
+    if (hiddenGroupRules && matchGroupWildcard(src.category, hiddenGroupRules)) {
+      return false;
+    }
+
+    // Name-based permanent block rule
+    if (blockRules && matchBlockRule([src.name], blockRules)) {
+      return false;
+    }
+
     // Protocol filter (ipv4 / ipv6)
     if (ipvLimit && src.ipv_type !== ipvLimit) {
       return false;
@@ -212,53 +366,120 @@ function getExportData(req, ipvLimit = null, defaultFormat = 'm3u') {
     return true;
   });
 
-  // 5. Apply limit_per_channel grouping and sorting
-  // Group by channel name (case-insensitive)
+  // 5. Apply limit_per_channel grouping and sorting.
+  // Same channel is exported as one logical channel with multiple URL lines.
   const groups = new Map();
   for (const src of sources) {
-    const key = src.name.toLowerCase().trim();
+    const key = normalizeChannelKey(src);
     if (!groups.has(key)) {
       groups.set(key, []);
     }
     groups.get(key).push(src);
   }
 
-  const finalSources = [];
+  const finalChannels = [];
   const logoRepo = settings.logoRepositoryUrl || '';
 
   for (const [_, groupItems] of groups) {
-    // Sort in group: active first, then highest speed, then lowest delay
     groupItems.sort(compareSourceQualityForExport);
-
-    // Take top N
     const limit = limitPerChannel > 0 ? Math.min(limitPerChannel, groupItems.length) : groupItems.length;
-    for (let i = 0; i < limit; i++) {
-      const src = groupItems[i];
-      
-      // Match and attach Logo if missing
-      if (!src.tvg_logo && logoRepo) {
-        // Strip symbols from name for matching, e.g. CCTV-1 -> cctv1
-        const cleanName = src.name.toLowerCase().replace(/[-_\s📺📡☘️]/g, '');
-        src.tvg_logo = `${logoRepo}/${cleanName}.png`;
-      }
-      
-      finalSources.push(src);
-    }
+    finalChannels.push(buildExportChannel(groupItems.slice(0, limit), logoRepo, req));
   }
 
   // Sort overall sources by the preferred playlist/category order.
-  finalSources.sort(compareSourcesForExport);
-  return finalSources;
+  finalChannels.sort(compareSourcesForExport);
+  return finalChannels;
+}
+
+function getHlsExportData(req, ipvLimit = null) {
+  verifyExportToken(req);
+  let sources = query('SELECT * FROM sources WHERE stream_enabled = 1');
+  if (ipvLimit) {
+    sources = sources.filter(src => src.ipv_type === ipvLimit);
+  }
+  sources = sources
+    .sort(compareSourcesForExport)
+    .map(src => ({
+      ...src,
+      channel_id: ensureChannelId(src),
+      url: buildHlsUrl(req, src.id),
+      request_headers: '',
+      url_items: [{
+        ...src,
+        channel_id: ensureChannelId(src),
+        url: buildHlsUrl(req, src.id),
+        request_headers: ''
+      }],
+      urls: [buildHlsUrl(req, src.id)]
+    }));
+  return sources;
 }
 
 /**
  * Format sources list as M3U
  */
-function formatAsM3u(sources) {
-  let output = '#EXTM3U\n';
-  for (const src of sources) {
-    output += `#EXTINF:-1 tvg-name="${escapeM3uAttr(src.name)}" tvg-logo="${escapeM3uAttr(src.tvg_logo)}" group-title="${escapeM3uAttr(src.category)}",${src.name}\n`;
+function formatAsM3u(req, sources) {
+  const settingsRows = query("SELECT key, value FROM settings WHERE key IN ('userAgent', 'announcementEnabled', 'announcementName', 'announcementCategory', 'announcementUrl', 'announcementLogo', 'hlsProxyEnabled')");
+  const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
+  const userAgent = settings.userAgent || DEFAULT_M3U_HTTP_USER_AGENT;
+  const isProxyMode = req.query.proxy === '1' || settings.hlsProxyEnabled === '1';
+  const origin = getRequestOrigin(req);
+
+  const channels = sources
+    .flatMap(src => {
+      const items = Array.isArray(src.url_items) && src.url_items.length > 0
+        ? src.url_items
+        : [{ ...src, url: src.url }];
+      const seen = new Set();
+      return items
+        .filter(item => {
+          if (!item.url || seen.has(item.url)) return false;
+          seen.add(item.url);
+          return true;
+        })
+        .map(item => {
+          let streamUrl = item.url;
+          if (isProxyMode && item.id) {
+            if (streamUrl.includes('.flv')) {
+              streamUrl = `${origin}/stream/flv/${item.id}`;
+            } else if (streamUrl.includes('.m3u8')) {
+              streamUrl = `${origin}/stream/proxy/${item.id}/index.m3u8`;
+            }
+          }
+          return { src: { ...src, ...item, url: streamUrl } };
+        });
+    });
+
+  let output = `#EXTM3U x-tvg-url="${escapeM3uAttr(buildEpgUrl(req))}"\n`;
+  output += `# Updated: ${formatBeijingTimestamp()}\n`;
+  output += `# Channels: ${channels.length}\n\n`;
+
+  // Inject system announcement channel at index 0
+  if (settings.announcementEnabled !== '0') {
+    output += `${getAnnouncementM3uItem(origin, settings, sources)}\n\n`;
+  }
+
+  for (const { src } of channels) {
+    const catchupAttrs = formatExtinfCatchupAttributes(src.catchup);
+    const channelId = ensureChannelId(src);
+    const extinfAttrs = [
+      `tvg-id="${escapeM3uAttr(channelId)}"`,
+      `tvg-name="${escapeM3uAttr(src.name)}"`,
+      `tvg-logo="${escapeM3uAttr(src.tvg_logo)}"`,
+      `group-title="${escapeM3uAttr(src.category)}"`,
+      catchupAttrs
+    ].filter(Boolean).join(' ');
+
+    output += `#EXTINF:-1 ${extinfAttrs},${src.name}\n`;
+    output += '#EXTVLCOPT:network-caching=10000\n';
+    output += '#EXTVLCOPT:http-reconnect=true\n';
+    const headers = { 'User-Agent': userAgent, ...parseJsonObject(src.request_headers) };
+    for (const [key, value] of Object.entries(headers)) {
+      if (!value) continue;
+      output += `#EXTVLCOPT:http-${String(key).toLowerCase()}=${value}\n`;
+    }
     output += `${src.url}\n`;
+    output += '\n';
   }
   return output;
 }
@@ -266,7 +487,12 @@ function formatAsM3u(sources) {
 /**
  * Format sources list as TXT
  */
-function formatAsTxt(sources) {
+function formatAsTxt(req, sources) {
+  const settingsRows = query("SELECT key, value FROM settings WHERE key IN ('announcementEnabled', 'announcementName', 'announcementCategory', 'announcementUrl', 'announcementLogo', 'hlsProxyEnabled')");
+  const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
+  const isProxyMode = req.query.proxy === '1' || settings.hlsProxyEnabled === '1';
+  const origin = getRequestOrigin(req);
+
   // Group by category
   const categories = new Map();
   for (const src of sources) {
@@ -277,10 +503,24 @@ function formatAsTxt(sources) {
   }
 
   let output = '';
+
+  // Inject system announcement at top
+  if (settings.announcementEnabled !== '0') {
+    output += `${getAnnouncementTxtItem(origin, settings, sources)}\n\n`;
+  }
+
   for (const [category, items] of categories) {
     output += `${category},#genre#\n`;
     for (const src of items) {
-      output += `${src.name},${src.url}\n`;
+      const rawUrls = Array.isArray(src.urls) && src.urls.length > 0 ? src.urls : [src.url].filter(Boolean);
+      const urls = rawUrls.map(u => {
+        if (isProxyMode && src.id) {
+          if (u.includes('.flv')) return `${origin}/stream/flv/${src.id}`;
+          if (u.includes('.m3u8')) return `${origin}/stream/proxy/${src.id}/index.m3u8`;
+        }
+        return u;
+      });
+      output += `${src.name},${urls.join('#')}\n`;
     }
     output += '\n';
   }
@@ -290,15 +530,15 @@ function formatAsTxt(sources) {
 /**
  * General helper to send playlist responses
  */
-function sendPlaylistResponse(res, format, sources) {
+function sendPlaylistResponse(req, res, format, sources) {
   if (format === 'm3u') {
     res.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="playlist.m3u"');
-    res.send(formatAsM3u(sources));
+    res.send(formatAsM3u(req, sources));
   } else {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="playlist.txt"');
-    res.send(formatAsTxt(sources));
+    res.send(formatAsTxt(req, sources));
   }
 }
 
@@ -308,7 +548,7 @@ function sendPlaylistResponse(res, format, sources) {
 router.get('/m3u', (req, res) => {
   try {
     const sources = getExportData(req, null, 'm3u');
-    sendPlaylistResponse(res, 'm3u', sources);
+    sendPlaylistResponse(req, res, 'm3u', sources);
   } catch (error) {
     if (error.message.includes('403')) return res.status(403).send(error.message);
     res.status(500).send('导出失败: ' + error.message);
@@ -319,7 +559,7 @@ router.get('/m3u', (req, res) => {
 router.get('/txt', (req, res) => {
   try {
     const sources = getExportData(req, null, 'txt');
-    sendPlaylistResponse(res, 'txt', sources);
+    sendPlaylistResponse(req, res, 'txt', sources);
   } catch (error) {
     if (error.message.includes('403')) return res.status(403).send(error.message);
     res.status(500).send('导出失败: ' + error.message);
@@ -332,7 +572,7 @@ router.get('/ipv4', (req, res) => {
     const settings = Object.fromEntries(query('SELECT key, value FROM settings').map(r => [r.key, r.value]));
     const defaultFormat = settings.defaultExportFormat || 'm3u';
     const sources = getExportData(req, 'ipv4', defaultFormat);
-    sendPlaylistResponse(res, defaultFormat, sources);
+    sendPlaylistResponse(req, res, defaultFormat, sources);
   } catch (error) {
     if (error.message.includes('403')) return res.status(403).send(error.message);
     res.status(500).send('导出失败: ' + error.message);
@@ -345,7 +585,7 @@ router.get('/ipv6', (req, res) => {
     const settings = Object.fromEntries(query('SELECT key, value FROM settings').map(r => [r.key, r.value]));
     const defaultFormat = settings.defaultExportFormat || 'm3u';
     const sources = getExportData(req, 'ipv6', defaultFormat);
-    sendPlaylistResponse(res, defaultFormat, sources);
+    sendPlaylistResponse(req, res, defaultFormat, sources);
   } catch (error) {
     if (error.message.includes('403')) return res.status(403).send(error.message);
     res.status(500).send('导出失败: ' + error.message);
@@ -356,7 +596,7 @@ router.get('/ipv6', (req, res) => {
 router.get('/ipv4/m3u', (req, res) => {
   try {
     const sources = getExportData(req, 'ipv4', 'm3u');
-    sendPlaylistResponse(res, 'm3u', sources);
+    sendPlaylistResponse(req, res, 'm3u', sources);
   } catch (error) {
     if (error.message.includes('403')) return res.status(403).send(error.message);
     res.status(500).send('导出失败: ' + error.message);
@@ -367,7 +607,7 @@ router.get('/ipv4/m3u', (req, res) => {
 router.get('/ipv4/txt', (req, res) => {
   try {
     const sources = getExportData(req, 'ipv4', 'txt');
-    sendPlaylistResponse(res, 'txt', sources);
+    sendPlaylistResponse(req, res, 'txt', sources);
   } catch (error) {
     if (error.message.includes('403')) return res.status(403).send(error.message);
     res.status(500).send('导出失败: ' + error.message);
@@ -378,7 +618,7 @@ router.get('/ipv4/txt', (req, res) => {
 router.get('/ipv6/m3u', (req, res) => {
   try {
     const sources = getExportData(req, 'ipv6', 'm3u');
-    sendPlaylistResponse(res, 'm3u', sources);
+    sendPlaylistResponse(req, res, 'm3u', sources);
   } catch (error) {
     if (error.message.includes('403')) return res.status(403).send(error.message);
     res.status(500).send('导出失败: ' + error.message);
@@ -389,10 +629,82 @@ router.get('/ipv6/m3u', (req, res) => {
 router.get('/ipv6/txt', (req, res) => {
   try {
     const sources = getExportData(req, 'ipv6', 'txt');
-    sendPlaylistResponse(res, 'txt', sources);
+    sendPlaylistResponse(req, res, 'txt', sources);
   } catch (error) {
     if (error.message.includes('403')) return res.status(403).send(error.message);
     res.status(500).send('导出失败: ' + error.message);
+  }
+});
+
+router.get('/hls', (req, res) => {
+  try {
+    const settings = Object.fromEntries(query('SELECT key, value FROM settings').map(r => [r.key, r.value]));
+    const defaultFormat = settings.defaultExportFormat || 'm3u';
+    const sources = getHlsExportData(req);
+    sendPlaylistResponse(req, res, defaultFormat, sources);
+  } catch (error) {
+    if (error.message.includes('403')) return res.status(403).send(error.message);
+    res.status(500).send('导出 HLS 推流订阅失败: ' + error.message);
+  }
+});
+
+router.get('/hls/m3u', (req, res) => {
+  try {
+    const sources = getHlsExportData(req);
+    sendPlaylistResponse(req, res, 'm3u', sources);
+  } catch (error) {
+    if (error.message.includes('403')) return res.status(403).send(error.message);
+    res.status(500).send('导出 HLS M3U 失败: ' + error.message);
+  }
+});
+
+router.get('/hls/txt', (req, res) => {
+  try {
+    const sources = getHlsExportData(req);
+    sendPlaylistResponse(req, res, 'txt', sources);
+  } catch (error) {
+    if (error.message.includes('403')) return res.status(403).send(error.message);
+    res.status(500).send('导出 HLS TXT 失败: ' + error.message);
+  }
+});
+
+router.get('/hls/ipv4/m3u', (req, res) => {
+  try {
+    const sources = getHlsExportData(req, 'ipv4');
+    sendPlaylistResponse(req, res, 'm3u', sources);
+  } catch (error) {
+    if (error.message.includes('403')) return res.status(403).send(error.message);
+    res.status(500).send('导出 HLS IPv4 M3U 失败: ' + error.message);
+  }
+});
+
+router.get('/hls/ipv6/m3u', (req, res) => {
+  try {
+    const sources = getHlsExportData(req, 'ipv6');
+    sendPlaylistResponse(req, res, 'm3u', sources);
+  } catch (error) {
+    if (error.message.includes('403')) return res.status(403).send(error.message);
+    res.status(500).send('导出 HLS IPv6 M3U 失败: ' + error.message);
+  }
+});
+
+router.get('/hls/ipv4/txt', (req, res) => {
+  try {
+    const sources = getHlsExportData(req, 'ipv4');
+    sendPlaylistResponse(req, res, 'txt', sources);
+  } catch (error) {
+    if (error.message.includes('403')) return res.status(403).send(error.message);
+    res.status(500).send('导出 HLS IPv4 TXT 失败: ' + error.message);
+  }
+});
+
+router.get('/hls/ipv6/txt', (req, res) => {
+  try {
+    const sources = getHlsExportData(req, 'ipv6');
+    sendPlaylistResponse(req, res, 'txt', sources);
+  } catch (error) {
+    if (error.message.includes('403')) return res.status(403).send(error.message);
+    res.status(500).send('导出 HLS IPv6 TXT 失败: ' + error.message);
   }
 });
 

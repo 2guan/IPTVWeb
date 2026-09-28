@@ -49,7 +49,9 @@ router.get('/', authenticateToken, (req, res) => {
   }
   if (subscriptionId) {
     if (subscriptionId === 'manual') {
-      whereClauses.push('s.subscription_id IS NULL');
+      whereClauses.push("(s.subscription_id IS NULL AND COALESCE(s.origin, '') != 'migu')");
+    } else if (subscriptionId === 'migu') {
+      whereClauses.push("s.origin = 'migu'");
     } else {
       whereClauses.push('s.subscription_id = ?');
       params.push(parseInt(subscriptionId));
@@ -115,22 +117,17 @@ router.post('/run', authenticateToken, (req, res) => {
   if (optimizerStatus.running) {
     return res.status(409).json({ error: '大模型优化任务已经在后台运行中，请等待其完成' });
   }
-  try {
-    run("DELETE FROM optimized_sources");
-    runLlmOptimization({ clearBeforeRun: false }).catch(err => {
-      console.error('Background LLM optimization error:', err);
-    });
-    res.json({ message: '已清空旧优化结果，大模型优化任务已在后台启动' });
-  } catch (error) {
-    res.status(500).json({ error: '启动优化前清空旧数据失败: ' + error.message });
-  }
+  runLlmOptimization().catch(err => {
+    console.error('Background LLM optimization error:', err);
+  });
+  res.json({ message: '全量优化任务已在后台启动，旧优化结果会在新结果写入时按源替换' });
 });
 
 router.post('/run-incremental', authenticateToken, (req, res) => {
   if (optimizerStatus.running) {
     return res.status(409).json({ error: '大模型优化任务已经在后台运行中，请等待其完成' });
   }
-  runLlmOptimization({ clearBeforeRun: false, incremental: true }).catch(err => {
+  runLlmOptimization({ incremental: true }).catch(err => {
     console.error('Background incremental LLM optimization error:', err);
   });
   res.json({ message: '增量优化任务已在后台启动' });

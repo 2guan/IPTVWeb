@@ -4,6 +4,7 @@ import zlib from 'zlib';
 import { XMLParser } from 'fast-xml-parser';
 import db, { run, query, queryOne } from './db.js';
 import { BEIJING_NOW_SQL } from './time.js';
+import { collectMiguEpgProgrammes } from './migu.js';
 
 // Helper to escape XML special characters
 function escapeXml(unsafe) {
@@ -73,7 +74,7 @@ async function fetchEpgXml(url, userAgent = 'IPTV-Admin') {
  */
 function normalizeName(name) {
   if (!name) return '';
-  return name.toString().toLowerCase().replace(/[-_\s📺📡☘️]/g, '');
+  return name.toString().toLowerCase().replace(/[-_\s📺📡☘️]/g, '').replace(/cctv-(\d+)/g, 'cctv$1');
 }
 
 /**
@@ -89,11 +90,6 @@ export async function syncEpg() {
 
   try {
     const epgSources = query('SELECT * FROM epg_sources');
-    if (epgSources.length === 0) {
-      epgSyncStatus.message = '未配置 EPG 订阅源';
-      epgSyncStatus.running = false;
-      return;
-    }
 
     // Get aliases from settings
     const aliasSetting = queryOne("SELECT value FROM settings WHERE key = 'alias'");
@@ -126,12 +122,28 @@ export async function syncEpg() {
 
     const mergedChannels = new Map(); // normalized_name -> { id, displayNames }
     const mergedProgrammes = []; // list of program XML segments or objects
+    const miguCoveredChannels = new Set();
 
     for (const source of epgSources) {
       console.log(`Syncing EPG source: ${source.name} (${source.url})`);
       run("UPDATE epg_sources SET status = 'fetching', error_message = NULL WHERE id = ?", source.id);
 
       try {
+        if (source.source_type === 'migu') {
+          epgSyncStatus.message = '正在拉取咪咕 EPG (跨天2日)...';
+          const miguEpg = await collectMiguEpgProgrammes({ days: 2 });
+          for (const channel of miguEpg.channels) {
+            if (!mergedChannels.has(channel.id)) {
+              mergedChannels.set(channel.id, { id: channel.id, displayNames: [channel.name] });
+            }
+            miguCoveredChannels.add(channel.id);
+          }
+          mergedProgrammes.push(...miguEpg.programmes);
+          run(`UPDATE epg_sources SET status = 'success', last_fetched_at = ${BEIJING_NOW_SQL} WHERE id = ?`, source.id);
+          console.log(`Migu EPG collected. Channels: ${miguEpg.channels.length}, programmes: ${miguEpg.programmes.length}`);
+          continue;
+        }
+
         const xmlText = await fetchEpgXml(source.url);
         const parsed = parser.parse(xmlText);
         
@@ -176,7 +188,7 @@ export async function syncEpg() {
         for (const ep of epgProgrammes) {
           const chId = ep['@_channel'];
           const localChName = epgChannelMap.get(chId);
-          if (localChName) {
+          if (localChName && !miguCoveredChannels.has(localChName)) {
             // Keep program
             const title = getXmlText(ep.title);
             const desc = getXmlText(ep.desc);
@@ -198,7 +210,7 @@ export async function syncEpg() {
       }
     }
 
-    // 3. Write merged XML
+    // 3. Write merged XML with deduplication
     epgSyncStatus.message = '正在写入并压缩合并后的 EPG 数据...';
     let xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n';
     xmlContent += '<!DOCTYPE tv SYSTEM "xmltv.dtd">\n';
@@ -211,8 +223,13 @@ export async function syncEpg() {
       xmlContent += `  </channel>\n`;
     }
 
-    // Write programmes
+    // Deduplicate programmes across multiple sources / cross-midnight overlap
+    const seenProgrammes = new Set();
     for (const p of mergedProgrammes) {
+      const key = `${p.channel}|${p.start}`;
+      if (seenProgrammes.has(key)) continue;
+      seenProgrammes.add(key);
+
       xmlContent += `  <programme start="${escapeXml(p.start)}" stop="${escapeXml(p.stop)}" channel="${escapeXml(p.channel)}">\n`;
       xmlContent += `    <title lang="zh">${escapeXml(p.title)}</title>\n`;
       if (p.desc) {

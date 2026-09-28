@@ -14,6 +14,19 @@ import VideoPreviewModal from '../components/VideoPreviewModal';
 
 const { Title, Text } = Typography;
 
+function getSourceLabel(record: any) {
+  if (record.subscription_name) {
+    return {
+      text: record.subscription_name,
+      color: record.origin === 'migu' ? 'magenta' : 'purple'
+    };
+  }
+  if (record.origin === 'migu') {
+    return { text: '咪咕', color: 'magenta' };
+  }
+  return { text: '手动导入', color: 'orange' };
+}
+
 export default function OptimizedSources() {
   // Data and Loading
   const [data, setData] = useState<any[]>([]);
@@ -368,10 +381,8 @@ export default function OptimizedSources() {
       align: 'center' as const,
       width: 110,
       render: (record: any) => {
-        if (record.subscription_name) {
-          return <Tag color="purple">{record.subscription_name}</Tag>;
-        }
-        return <Tag color="orange">手动导入</Tag>;
+        const source = getSourceLabel(record);
+        return <Tag color={source.color}>{source.text}</Tag>;
       }
     },
     {
@@ -762,7 +773,10 @@ export default function OptimizedSources() {
               <div className="mobile-card-meta">
                 <div>分组: <Tag color="blue" style={{ margin: 0 }}>{record.category || '其他'}</Tag></div>
                 <div>协议: <Tag style={{ margin: 0 }} color={record.ipv_type === 'ipv6' ? 'purple' : 'cyan'}>{record.ipv_type?.toUpperCase() || '未知'}</Tag></div>
-                <div>来源: <Tag color={record.subscription_name ? 'purple' : 'orange'} style={{ margin: 0 }}>{record.subscription_name || '手动导入'}</Tag></div>
+                <div>来源: {(() => {
+                  const source = getSourceLabel(record);
+                  return <Tag color={source.color} style={{ margin: 0 }}>{source.text}</Tag>;
+                })()}</div>
                 <div>延迟: {record.delay === -1 || record.status === 'unknown' ? '-' : <Text type={record.delay > 300 ? 'warning' : 'success'}>{record.delay} ms</Text>}</div>
                 <div>速度: {record.speed ? <Text strong>{record.speed.toFixed(2)} MB/s</Text> : '-'}</div>
                 <div>画质: {record.resolution ? `${record.resolution} (${record.codec || ''})` : '-'}</div>

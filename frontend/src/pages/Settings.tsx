@@ -1,15 +1,30 @@
 import { useState, useEffect } from 'react';
 import { 
   Form, Input, InputNumber, Button, Card, Tabs, Table, 
-  Tag, Space, Modal, Typography, Popconfirm, message, Divider, Select, Switch
+  Tag, Space, Modal, Typography, Popconfirm, message, Divider, Select, Switch, Upload, Alert
 } from 'antd';
 import { 
-  UserAddOutlined, KeyOutlined, DeleteOutlined 
+  UserAddOutlined, KeyOutlined, DeleteOutlined,
+  DownloadOutlined, UploadOutlined, RollbackOutlined
 } from '@ant-design/icons';
 import api from '../utils/api';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
+
+const USER_AGENT_OPTIONS = [
+  { label: 'TiviMate', value: 'TiviMate/5.1.0' },
+  { label: 'OTT Navigator', value: 'OTT Navigator/1.7.0' },
+  { label: 'PotPlayer', value: 'PotPlayer/1.7.21902' },
+  { label: 'ExoPlayer', value: 'ExoPlayerLib/2.18.1' },
+  { label: 'VLC', value: 'VLC/3.0.20 LibVLC/3.0.20' },
+  { label: 'Android TV Browser', value: 'Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 Chrome/120.0 Safari/537.36' },
+  { label: 'FFmpeg/Lavf', value: 'Lavf/58.76.100' }
+];
+
+function isEnabledSetting(value: any) {
+  return value === true || value === 1 || ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+}
 
 // ─── Cron Helpers ────────────────────────────────────────────────────────────
 
@@ -208,6 +223,11 @@ export default function Settings() {
   const [pwModalOpen, setPwModalOpen] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
 
+  // Backup & Snapshot state
+  const [hasSnapshot, setHasSnapshot] = useState(false);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [rollbackLoading, setRollbackLoading] = useState(false);
+
   useEffect(() => {
     // Check if current user is admin
     const userStr = localStorage.getItem('iptv_user');
@@ -216,11 +236,76 @@ export default function Settings() {
       setIsAdmin(true);
     }
 
-    // Load settings
+    // Load settings & backup status
     loadSettings();
+    loadBackupStatus();
   // Initial settings and current user are loaded once on mount.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const loadBackupStatus = async () => {
+    try {
+      const res = await api.get('/api/settings/backup/status');
+      setHasSnapshot(!!res.data?.hasSnapshot);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleExportBackup = async () => {
+    setBackupLoading(true);
+    try {
+      const res = await api.get('/api/settings/backup/export', { responseType: 'blob' });
+      const blob = new Blob([res.data], { type: 'application/json' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `iptv-backup-${new Date().toISOString().slice(0, 10)}.json`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      message.success('配置备份导出成功');
+    } catch {
+      message.error('导出备份失败');
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const handleImportBackup = async (file: File) => {
+    try {
+      const text = await file.text();
+      let json: any;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        message.error('文件不是有效的 JSON 格式');
+        return false;
+      }
+      const res = await api.post('/api/settings/backup/import', json);
+      message.success(res.data?.message || '配置导入成功！已自动创建安全快照');
+      await loadSettings();
+      await loadBackupStatus();
+    } catch (err: any) {
+      message.error(err.response?.data?.error || err.message || '配置导入失败');
+    }
+    return false;
+  };
+
+  const handleRollbackBackup = async () => {
+    setRollbackLoading(true);
+    try {
+      const res = await api.post('/api/settings/backup/rollback');
+      message.success(res.data?.message || '已成功回滚到导入前配置快照');
+      await loadSettings();
+      await loadBackupStatus();
+    } catch (err: any) {
+      message.error(err.response?.data?.error || err.message || '回滚失败');
+    } finally {
+      setRollbackLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (activeTab === 'users' && isAdmin) {
@@ -241,16 +326,35 @@ export default function Settings() {
         concurrency: parseInt(res.data.concurrency || 5),
         timeout: parseInt(res.data.timeout || 10000),
         minSpeed: parseFloat(res.data.minSpeed || 0.2),
+        userAgent: res.data.userAgent || 'TiviMate/5.1.0',
+        testFastMode: isEnabledSetting(res.data.testFastMode ?? '1'),
+        ffprobeMetadataEnabled: isEnabledSetting(res.data.ffprobeMetadataEnabled),
+        ffprobeFallbackEnabled: isEnabledSetting(res.data.ffprobeFallbackEnabled),
+        multicastDefaultActive: isEnabledSetting(res.data.multicastDefaultActive),
+        announcementEnabled: isEnabledSetting(res.data.announcementEnabled ?? '1'),
+        announcementName: res.data.announcementName || '',
+        announcementCategory: res.data.announcementCategory || '',
+        announcementUrl: res.data.announcementUrl || '',
+        announcementLogo: res.data.announcementLogo || '',
+        hlsProxyEnabled: isEnabledSetting(res.data.hlsProxyEnabled),
+        sichuanToken: res.data.sichuanToken || '',
         exportToken: res.data.exportToken,
         logoRepositoryUrl: res.data.logoRepositoryUrl,
         defaultExportFormat: res.data.defaultExportFormat || 'm3u',
-        limitPerChannel: parseInt(res.data.limitPerChannel || 5)
+        limitPerChannel: parseInt(res.data.limitPerChannel || 5),
+        streamTranscodeMode: res.data.streamTranscodeMode || 'copy',
+        streamMaxStreams: parseInt(res.data.streamMaxStreams || 6),
+        streamIdleTimeout: parseInt(res.data.streamIdleTimeout || 300),
+        streamSegmentSeconds: parseInt(res.data.streamSegmentSeconds || 4),
+        streamListSize: parseInt(res.data.streamListSize || 8)
       });
 
       rulesForm.setFieldsValue({
         blacklist: res.data.blacklist,
         whitelist: res.data.whitelist,
-        alias: res.data.alias
+        alias: res.data.alias,
+        blockRules: res.data.blockRules || '',
+        hiddenGroupRules: res.data.hiddenGroupRules || ''
       });
 
       const sc = res.data.syncCron || '';
@@ -272,8 +376,10 @@ export default function Settings() {
         llmBaseUrl: res.data.llmBaseUrl || '',
         llmModelName: res.data.llmModelName || '',
         llmDefaultMode: res.data.llmDefaultMode || 'original',
-        llmChunkSize: parseInt(res.data.llmChunkSize || 80)
+        llmChunkSize: parseInt(res.data.llmChunkSize || 80),
+        llmOptimizePrompt: res.data.llmOptimizePrompt || ''
       });
+
     } catch {
       message.error('加载设置项失败');
     } finally {
@@ -423,6 +529,47 @@ export default function Settings() {
                   <Form.Item name="minSpeed" label="合格直播源最低速度限制 (MB/s)" rules={[{ required: true, message: '请输入最低速度' }]}>
                     <InputNumber min={0.01} max={10} step={0.1} style={{ width: '100%' }} />
                   </Form.Item>
+                  <Form.Item name="userAgent" label="测速请求 User-Agent" tooltip="用于直播源测活、测速和播放器兜底探测。">
+                    <Select
+                      showSearch
+                      allowClear
+                      placeholder="选择 User-Agent"
+                      options={USER_AGENT_OPTIONS}
+                      optionFilterProp="label"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="testFastMode"
+                    label="快速测速模式"
+                    valuePropName="checked"
+                    tooltip="开启后减少媒体分片抽样量，优先判断可用性，适合大批量直播源。"
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    name="ffprobeMetadataEnabled"
+                    label="使用 ffprobe 补充分辨率"
+                    valuePropName="checked"
+                    tooltip="关闭可明显减少批量测速耗时；开启后会在缺少分辨率信息时调用 ffprobe。"
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    name="ffprobeFallbackEnabled"
+                    label="失败后使用 ffprobe 兜底"
+                    valuePropName="checked"
+                    tooltip="关闭可避免无效源额外等待；开启后部分浏览器 fetch 失败但 ffprobe 可播放的源可能被救回。"
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    name="multicastDefaultActive"
+                    label="组播源默认判定有效"
+                    valuePropName="checked"
+                    tooltip="开启后，rtp://、udp:// 以及 224.0.0.0/4、ff00::/8 组播地址在测活时直接标记为有效，适合公网服务器无法接收 IPTV 组播的场景。"
+                  >
+                    <Switch />
+                  </Form.Item>
                   <Form.Item name="limitPerChannel" label="每个频道导出的最大直播源数 (最优保留)" rules={[{ required: true, message: '请输入最大保留数' }]}>
                     <InputNumber min={1} max={100} style={{ width: '100%' }} />
                   </Form.Item>
@@ -437,6 +584,89 @@ export default function Settings() {
                       <Select.Option value="m3u">M3U 格式</Select.Option>
                       <Select.Option value="txt">TXT 格式</Select.Option>
                     </Select>
+                  </Form.Item>
+                  <Divider>播放与导出高级选项</Divider>
+                  <Form.Item
+                    name="announcementEnabled"
+                    label="系统公告虚拟频道"
+                    valuePropName="checked"
+                    tooltip="开启后，在导出的 M3U / TXT 播放列表首位自动插入系统公告频道，提供欢迎短片与电视端播放指南。"
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    noStyle
+                    shouldUpdate={(prevValues, currentValues) => prevValues.announcementEnabled !== currentValues.announcementEnabled}
+                  >
+                    {({ getFieldValue }) =>
+                      getFieldValue('announcementEnabled') ? (
+                        <>
+                          <Form.Item
+                            name="announcementName"
+                            label="系统公告频道名称"
+                            tooltip="在播放列表中显示的公告标题频道名称。留空默认为：Guan‘s IPTV。公告分组下方将自动追加第二个频道：更新时间:MM-DD HH:mm，两个频道均仅供电视端直观查看，不可播放。"
+                          >
+                            <Input placeholder="留空默认: Guan‘s IPTV" />
+                          </Form.Item>
+                          <Form.Item
+                            name="announcementCategory"
+                            label="系统公告频道分组"
+                            tooltip="在播放列表中显示的分组类别名称。留空默认为：公告"
+                          >
+                            <Input placeholder="公告" />
+                          </Form.Item>
+                          <Form.Item
+                            name="announcementUrl"
+                            label="系统公告视频地址 (选填)"
+                            tooltip="若希望公告频道播放实际视频，可在此输入 MP4 或 M3U8 视频直链；留空则两个公告频道均不挂链接（仅供电视端查看，不可播放）。"
+                          >
+                            <Input placeholder="留空不挂链接（仅供查看不可播放）" />
+                          </Form.Item>
+                          <Form.Item
+                            name="announcementLogo"
+                            label="系统公告台标地址 (Logo URL)"
+                            tooltip="公告频道台标图标。留空默认使用内置的高清系统台标（/assets/announcement-logo.png）。"
+                          >
+                            <Input placeholder="留空使用内置台标，或输入 http(s)://.../logo.png" />
+                          </Form.Item>
+                        </>
+                      ) : null
+                    }
+                  </Form.Item>
+                  <Form.Item
+                    name="hlsProxyEnabled"
+                    label="HLS 同源全代理模式"
+                    valuePropName="checked"
+                    tooltip="开启后，导出播放列表中的 m3u8 地址将重写为本机同源相对路径（分片由服务器内存透传，不写磁盘），解决极空间极影视等 TV 播放器跨域或超长 URL 解析异常问题。"
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    name="sichuanToken"
+                    label="四川广电官网 access_token (选填)"
+                    tooltip="用于四川广电官网 9 个高清电视频道动态官方换签。可直接粘贴 Bearer Token，支持从官网个人中心获取。不填则仅采集免密公开活动直播。"
+                  >
+                    <Input.Password placeholder="粘贴四川官网 access_token" />
+                  </Form.Item>
+                  <Divider>HLS 推流</Divider>
+                  <Form.Item name="streamTranscodeMode" label="推流转码模式" tooltip="copy 低 CPU；auto 会先尝试 copy，失败后自动转码；transcode 固定输出 H.264/AAC。">
+                    <Select>
+                      <Select.Option value="copy">copy：直接封装，低 CPU</Select.Option>
+                      <Select.Option value="auto">auto：失败时自动转码</Select.Option>
+                      <Select.Option value="transcode">transcode：强制 H.264/AAC</Select.Option>
+                    </Select>
+                  </Form.Item>
+                  <Form.Item name="streamMaxStreams" label="最大同时推流频道数">
+                    <InputNumber min={1} max={50} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item name="streamIdleTimeout" label="无人访问自动停止时间 (秒)">
+                    <InputNumber min={30} max={86400} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item name="streamSegmentSeconds" label="HLS 分片时长 (秒)">
+                    <InputNumber min={1} max={20} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item name="streamListSize" label="HLS 播放列表分片数量">
+                    <InputNumber min={3} max={30} style={{ width: '100%' }} />
                   </Form.Item>
                   <Form.Item>
                     <Button type="primary" htmlType="submit" loading={loading} size="large">保存设置</Button>
@@ -463,7 +693,13 @@ export default function Settings() {
                     <TextArea rows={6} placeholder="输入白名单 URL，或关键字（支持频道名称匹配）" />
                   </Form.Item>
                   <Form.Item name="alias" label="频道名称别名对照表 (每行一组)" tooltip="规范化不同订阅源的名称以便 EPG 匹配。格式: 标准频道名,别名1|别名2">
-                    <TextArea rows={8} placeholder="CCTV-1,CCTV1|CCTV1 高清&#10;湖南卫视,湖南卫视高清|湖南卫视HD" />
+                    <TextArea rows={6} placeholder="CCTV-1,CCTV1|CCTV1 高清&#10;湖南卫视,湖南卫视高清|湖南卫视HD" />
+                  </Form.Item>
+                  <Form.Item name="blockRules" label="频道名长期屏蔽规则 (每行一个)" tooltip="按频道名称长期屏蔽。以 = 开头为全名精确匹配（如 =CCTV-1），否则为包含匹配（如 购物、导视）。源更新换地址或换签名依然生效。">
+                    <TextArea rows={4} placeholder="=CCTV-1&#10;购物&#10;导视" />
+                  </Form.Item>
+                  <Form.Item name="hiddenGroupRules" label="动态分组通配隐藏规则 (每行一个)" tooltip="支持通配符 *，例如 体育-* 将自动隐藏所有同前缀的每日动态比赛分组。">
+                    <TextArea rows={3} placeholder="体育-*" />
                   </Form.Item>
                   <Form.Item>
                     <Button type="primary" htmlType="submit" loading={loading} size="large">保存规则</Button>
@@ -547,8 +783,8 @@ export default function Settings() {
                         }}
                         size="small"
                       />
-                      <Text strong>自动优化直播源</Text>
-                      <Text type="secondary" style={{ fontSize: 12 }}>调用大模型对直播源进行归一化优化（需先配置大模型）</Text>
+                      <Text strong>自动增量优化直播源</Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>定时只优化尚未进入优化列表的有效直播源（需先配置大模型）</Text>
                     </div>
                     {optimizeEnabled && (
                       <CronPicker
@@ -641,11 +877,97 @@ export default function Settings() {
                   <Form.Item name="llmChunkSize" label="大模型单次提交数量 (Batch Size)" rules={[{ required: true, message: '请输入单次提交数量' }]} tooltip="大模型单次上传处理的直播源行数。数值越小生成越快、越不易超时出错；数值越大所需请求次数越少但容易超时（推荐 50 - 150）">
                     <InputNumber min={10} max={1000} style={{ width: '100%' }} />
                   </Form.Item>
+                  <Form.Item
+                    name="llmOptimizePrompt"
+                    label="直播源优化提示词"
+                    rules={[{ required: true, message: '请输入直播源优化提示词' }]}
+                    tooltip="优化直播源时作为 system prompt 发送给大模型。请保留 JSON 返回格式要求，否则可能导致优化结果解析失败。"
+                  >
+                    <TextArea rows={16} placeholder="请输入频道名称、分组归一化、过滤规则和 JSON 返回格式要求" />
+                  </Form.Item>
                   <Form.Item>
                     <Button type="primary" htmlType="submit" loading={loading} size="large">保存配置</Button>
                   </Form.Item>
                 </Form>
               </Card>
+            )
+          },
+          // Backup & Restore Tab
+          {
+            key: 'backup',
+            label: '配置备份与恢复',
+            disabled: !isAdmin,
+            children: (
+              <Space orientation="vertical" size="large" style={{ width: '100%', maxWidth: 720 }}>
+                <Card variant="borderless" className="glass-card" title="单文件全量配置备份">
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    <Text type="secondary">
+                      将系统设置、定时任务、所有订阅源（含咪咕及普通订阅配置）、EPG 订阅以及手动导入的直播源一次性完整打包导出为单个 JSON 文件。
+                    </Text>
+                    <div>
+                      <Button
+                        type="primary"
+                        icon={<DownloadOutlined />}
+                        onClick={handleExportBackup}
+                        loading={backupLoading}
+                        size="large"
+                      >
+                        导出完整配置备份 (.json)
+                      </Button>
+                    </div>
+                  </Space>
+                </Card>
+
+                <Card variant="borderless" className="glass-card" title="配置文件导入与覆盖">
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="自动快照安全防护"
+                      description="每次点击导入配置前，系统都会在服务端自动生成一份 pre-import-backup.json 导入前快照。若新配置出现问题，可随时一键回滚。"
+                    />
+                    <Upload
+                      beforeUpload={handleImportBackup}
+                      showUploadList={false}
+                      accept=".json"
+                    >
+                      <Button icon={<UploadOutlined />} size="large">
+                        选择备份 JSON 文件并导入
+                      </Button>
+                    </Upload>
+                  </Space>
+                </Card>
+
+                <Card variant="borderless" className="glass-card" title="导入前快照回滚">
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    <Text type="secondary">
+                      {hasSnapshot 
+                        ? '检测到最近一次导入前自动生成的配置快照，可随时恢复至导入前的状态。' 
+                        : '当前暂无导入前快照记录（系统在首次执行配置导入前将自动生成）。'}
+                    </Text>
+                    <div>
+                      <Popconfirm
+                        title="确定回滚到最近一次导入前的快照吗？"
+                        description="此操作将覆盖当前系统设置并还原为上次导入前的全量数据。"
+                        onConfirm={handleRollbackBackup}
+                        okText="确定回滚"
+                        cancelText="取消"
+                        disabled={!hasSnapshot}
+                      >
+                        <Button
+                          danger
+                          icon={<RollbackOutlined />}
+                          disabled={!hasSnapshot}
+                          loading={rollbackLoading}
+                          size="large"
+                        >
+                          一键回滚到导入前快照
+                        </Button>
+                      </Popconfirm>
+                    </div>
+                  </Space>
+                </Card>
+              </Space>
             )
           },
           // User Tab (only rendered for Admins)

@@ -1,10 +1,21 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import db, { run, query, queryOne } from '../db.js';
+import db, { run, query } from '../db.js';
 import { authenticateToken, requireAdmin } from '../middleware.js';
 import { updateScheduler } from '../scheduler.js';
+import { exportBackup, importBackup, rollbackBackup, hasRollbackSnapshot } from '../configBackup.js';
 
 const router = express.Router();
+const CRON_SETTING_KEYS = ['syncCron', 'testCron', 'epgCron', 'optimizeCron'];
+
+function readCronSettings() {
+  const rows = query(
+    `SELECT key, value FROM settings WHERE key IN (${CRON_SETTING_KEYS.map(() => '?').join(',')})`,
+    ...CRON_SETTING_KEYS
+  );
+  const values = Object.fromEntries(rows.map(row => [row.key, row.value || '']));
+  return Object.fromEntries(CRON_SETTING_KEYS.map(key => [key, values[key] || '']));
+}
 
 // 1. Get system settings
 router.get('/', authenticateToken, (req, res) => {
@@ -27,15 +38,12 @@ router.post('/', authenticateToken, (req, res) => {
   try {
     const insertStmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
     
-    // Check if crons changed
-    const oldCrons = queryOne('SELECT value FROM settings WHERE key = ?', 'syncCron')?.value + 
-                     queryOne('SELECT value FROM settings WHERE key = ?', 'testCron')?.value +
-                     queryOne('SELECT value FROM settings WHERE key = ?', 'epgCron')?.value;
+    const oldCrons = readCronSettings();
 
     db.exec('BEGIN TRANSACTION');
     try {
       for (const [key, value] of Object.entries(settingsData)) {
-        insertStmt.run(key, value.toString());
+        insertStmt.run(key, (value ?? '').toString());
       }
       db.exec('COMMIT');
     } catch (dbErr) {
@@ -43,8 +51,8 @@ router.post('/', authenticateToken, (req, res) => {
       throw dbErr;
     }
 
-    const newCrons = (settingsData.syncCron || '') + (settingsData.testCron || '') + (settingsData.epgCron || '');
-    if (oldCrons !== newCrons) {
+    const newCrons = readCronSettings();
+    if (CRON_SETTING_KEYS.some(key => oldCrons[key] !== newCrons[key])) {
       // Reload cron tasks if cron expressions changed
       updateScheduler();
     }
@@ -121,6 +129,54 @@ router.delete('/users/:id', authenticateToken, requireAdmin, (req, res) => {
   } catch (error) {
     res.status(500).json({ error: '删除用户失败: ' + error.message });
   }
+});
+
+// 7. Export full configuration backup JSON
+router.get('/backup/export', authenticateToken, (req, res) => {
+  try {
+    const backup = exportBackup();
+    const filename = `iptv-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(JSON.stringify(backup, null, 2));
+  } catch (error) {
+    res.status(500).json({ error: '导出备份失败: ' + error.message });
+  }
+});
+
+router.get('/backup', authenticateToken, (req, res) => {
+  try {
+    const backup = exportBackup();
+    res.json(backup);
+  } catch (error) {
+    res.status(500).json({ error: '获取备份失败: ' + error.message });
+  }
+});
+
+// 8. Import configuration backup JSON
+router.post('/backup/import', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const backupData = req.body;
+    const result = importBackup(backupData);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// 9. Rollback configuration to pre-import snapshot
+router.post('/backup/rollback', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const result = rollbackBackup();
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// 10. Check if rollback snapshot is available
+router.get('/backup/status', authenticateToken, (req, res) => {
+  res.json({ hasSnapshot: hasRollbackSnapshot() });
 });
 
 export default router;

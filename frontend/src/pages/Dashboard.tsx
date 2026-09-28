@@ -10,6 +10,12 @@ import api from '../utils/api';
 
 const { Title, Text } = Typography;
 
+function getSourceStatsTagColor(category: string) {
+  if (category === '咪咕') return 'magenta';
+  if (category === '手动导入') return 'orange';
+  return 'blue';
+}
+
 export default function Dashboard() {
   const [stats, setStats] = useState<any>(null);
   const [testState, setTestState] = useState<any>({ running: false });
@@ -266,7 +272,7 @@ export default function Dashboard() {
                     loading={syncState.running}
                     size="large"
                   >
-                    同步所有外部订阅
+                    同步订阅与咪咕
                   </Button>
                   <Button 
                     icon={<SyncOutlined style={{ color: '#722ed1' }} />} 
@@ -334,7 +340,7 @@ export default function Dashboard() {
                 <div key={item.category || 'uncategorized'} className="source-stats-list-item">
                   <div className="stats-grid-item source-stats-item">
                     <div className="source-stats-header">
-                      <Tag color="blue" className="source-stats-tag">
+                      <Tag color={getSourceStatsTagColor(item.category)} className="source-stats-tag">
                         {item.category || '未分类'}
                       </Tag>
                       <Tag color="default" className="source-stats-total-tag">

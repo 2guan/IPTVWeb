@@ -6,7 +6,7 @@ import {
 import { 
   SearchOutlined, PlusOutlined, ImportOutlined, DeleteOutlined, 
   PlayCircleOutlined, EditOutlined, InboxOutlined, 
-  ThunderboltOutlined, EyeOutlined
+  ThunderboltOutlined, EyeOutlined, VideoCameraOutlined, StopOutlined, LinkOutlined
 } from '@ant-design/icons';
 import api from '../utils/api';
 import { formatBeijingTime, isFutureBeijingTime } from '../utils/time';
@@ -15,6 +15,19 @@ import VideoPreviewModal from '../components/VideoPreviewModal';
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 const { Dragger } = Upload;
+
+function getSourceLabel(record: any) {
+  if (record.subscription_name) {
+    return {
+      text: record.subscription_name,
+      color: record.origin === 'migu' ? 'magenta' : 'purple'
+    };
+  }
+  if (record.origin === 'migu') {
+    return { text: '咪咕', color: 'magenta' };
+  }
+  return { text: '手动导入', color: 'orange' };
+}
 
 export default function Sources() {
   // Data and Loading
@@ -40,6 +53,7 @@ export default function Sources() {
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [testingSourceIds, setTestingSourceIds] = useState<number[]>([]);
+  const [streamStatuses, setStreamStatuses] = useState<Record<number, any>>({});
   const singleTestTimersRef = useRef<Record<number, ReturnType<typeof setInterval>>>({});
 
   // Drawers and Modals
@@ -84,12 +98,23 @@ export default function Sources() {
       setData(res.data.items);
       setTotal(res.data.total);
       setFilters(res.data.filters);
+      loadStreamStatuses();
       return res.data.items;
     } catch {
       message.error('加载直播源失败');
       return [];
     } finally {
       if (showLoading) setLoading(false);
+    }
+  };
+
+  const loadStreamStatuses = async () => {
+    try {
+      const res = await api.get('/api/streams/status');
+      const statusMap = Object.fromEntries((res.data || []).map((item: any) => [item.sourceId, item]));
+      setStreamStatuses(statusMap);
+    } catch {
+      // 推流状态不影响主列表加载。
     }
   };
 
@@ -230,6 +255,82 @@ export default function Sources() {
     }
   };
 
+  const handleStartStream = async (record: any) => {
+    try {
+      message.loading({ content: `正在启动 [${record.name}] 推流...`, key: `stream-${record.id}`, duration: 0 });
+      await api.post('/api/streams/start', { sourceIds: [record.id] });
+      message.success({ content: `[${record.name}] 推流已启动`, key: `stream-${record.id}` });
+      loadStreamStatuses();
+    } catch (err: any) {
+      message.error({ content: err.response?.data?.error || '启动推流失败', key: `stream-${record.id}` });
+    }
+  };
+
+  const handleStopStream = async (record: any) => {
+    try {
+      await api.post('/api/streams/stop', { sourceIds: [record.id] });
+      message.success(`[${record.name}] 推流已停止`);
+      loadStreamStatuses();
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '停止推流失败');
+    }
+  };
+
+  const handleToggleStreamEnabled = async (record: any, enabled: boolean) => {
+    try {
+      await api.post('/api/streams/enable', { sourceIds: [record.id], enabled });
+      message.success(enabled ? '已加入 HLS 推流订阅' : '已移出 HLS 推流订阅');
+      fetchData({ showLoading: false });
+      loadStreamStatuses();
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '设置推流订阅失败');
+    }
+  };
+
+  const handleBulkStartStream = async () => {
+    if (selectedRowKeys.length === 0) return;
+    try {
+      message.loading({ content: `正在启动 ${selectedRowKeys.length} 个推流任务...`, key: 'bulk-stream', duration: 0 });
+      await api.post('/api/streams/start', { sourceIds: selectedRowKeys });
+      message.success({ content: '已提交批量推流任务', key: 'bulk-stream' });
+      setSelectedRowKeys([]);
+      loadStreamStatuses();
+    } catch (err: any) {
+      message.error({ content: err.response?.data?.error || '批量启动推流失败', key: 'bulk-stream' });
+    }
+  };
+
+  const handleBulkStopStream = async () => {
+    if (selectedRowKeys.length === 0) return;
+    try {
+      await api.post('/api/streams/stop', { sourceIds: selectedRowKeys });
+      message.success('已停止选中的推流任务');
+      setSelectedRowKeys([]);
+      loadStreamStatuses();
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '批量停止推流失败');
+    }
+  };
+
+  const handleBulkEnableStream = async (enabled: boolean) => {
+    if (selectedRowKeys.length === 0) return;
+    try {
+      await api.post('/api/streams/enable', { sourceIds: selectedRowKeys, enabled });
+      message.success(enabled ? '已将选中线路加入 HLS 推流订阅' : '已将选中线路移出 HLS 推流订阅');
+      setSelectedRowKeys([]);
+      fetchData({ showLoading: false });
+      loadStreamStatuses();
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '批量设置推流订阅失败');
+    }
+  };
+
+  const copyHlsUrl = (record: any) => {
+    const url = `${window.location.origin}/stream/hls/${record.id}/index.m3u8?autostart=1`;
+    navigator.clipboard.writeText(url);
+    message.success('HLS 推流地址已复制');
+  };
+
   // Single delete
   const handleDelete = async (id: number) => {
     try {
@@ -278,12 +379,16 @@ export default function Sources() {
         url: record.url,
         category: record.category,
         tvg_logo: record.tvg_logo,
+        request_headers: record.request_headers || '',
+        catchup: record.catchup || '',
+        stream_enabled: record.stream_enabled === 1,
         status: record.status
       });
     } else {
       setIsEditing(false);
       setEditingItem(null);
       form.resetFields();
+      form.setFieldsValue({ stream_enabled: false });
     }
     setEditModalOpen(true);
   };
@@ -379,10 +484,8 @@ export default function Sources() {
       align: 'center' as const,
       width: 110,
       render: (record: any) => {
-        if (record.subscription_name) {
-          return <Tag color="purple">{record.subscription_name}</Tag>;
-        }
-        return <Tag color="orange">手动导入</Tag>;
+        const source = getSourceLabel(record);
+        return <Tag color={source.color}>{source.text}</Tag>;
       }
     },
     {
@@ -466,6 +569,26 @@ export default function Sources() {
       }
     },
     {
+      title: '推流',
+      key: 'stream',
+      align: 'center' as const,
+      width: 95,
+      render: (record: any) => {
+        const status = streamStatuses[record.id];
+        const running = status?.running;
+        return (
+          <Space size={4} direction="vertical">
+            <Badge status={running ? 'processing' : record.stream_enabled === 1 ? 'warning' : 'default'} text={running ? '推流中' : record.stream_enabled === 1 ? '已启用' : '未启用'} />
+            <Switch
+              size="small"
+              checked={record.stream_enabled === 1}
+              onChange={(checked) => handleToggleStreamEnabled(record, checked)}
+            />
+          </Space>
+        );
+      }
+    },
+    {
       title: '最近测试',
       dataIndex: 'last_tested_at',
       key: 'last_tested_at',
@@ -495,6 +618,17 @@ export default function Sources() {
               loading={testingSourceIds.includes(record.id)}
               onClick={() => handleTestSingle(record)}
             />
+          </Tooltip>
+          <Tooltip title={streamStatuses[record.id]?.running ? '停止 HLS 推流' : '启动 HLS 推流'}>
+            <Button
+              size="small"
+              type="text"
+              icon={streamStatuses[record.id]?.running ? <StopOutlined /> : <VideoCameraOutlined />}
+              onClick={() => streamStatuses[record.id]?.running ? handleStopStream(record) : handleStartStream(record)}
+            />
+          </Tooltip>
+          <Tooltip title="复制 HLS 推流地址">
+            <Button size="small" type="text" icon={<LinkOutlined />} onClick={() => copyHlsUrl(record)} />
           </Tooltip>
           <Tooltip title="编辑">
             <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(record)} />
@@ -665,6 +799,18 @@ export default function Sources() {
             <Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={handleBulkTest}>
               批量测试
             </Button>
+            <Button size="small" icon={<VideoCameraOutlined />} onClick={handleBulkStartStream}>
+              启动推流
+            </Button>
+            <Button size="small" icon={<StopOutlined />} onClick={handleBulkStopStream}>
+              停止推流
+            </Button>
+            <Button size="small" onClick={() => handleBulkEnableStream(true)}>
+              加入推流订阅
+            </Button>
+            <Button size="small" onClick={() => handleBulkEnableStream(false)}>
+              移出推流订阅
+            </Button>
             <Popconfirm title="确定要删除选中的直播源吗？" onConfirm={handleBulkDelete}>
               <Button danger size="small" icon={<DeleteOutlined />}>
                 批量删除
@@ -743,10 +889,14 @@ export default function Sources() {
               <div className="mobile-card-meta">
                 <div>分组: <Tag color="blue" style={{ margin: 0 }}>{record.category || '未知'}</Tag></div>
                 <div>协议: <Tag style={{ margin: 0 }} color={record.ipv_type === 'ipv6' ? 'purple' : 'cyan'}>{record.ipv_type?.toUpperCase() || '未知'}</Tag></div>
-                <div>来源: <Tag color={record.subscription_name ? 'purple' : 'orange'} style={{ margin: 0 }}>{record.subscription_name || '手动导入'}</Tag></div>
+                <div>来源: {(() => {
+                  const source = getSourceLabel(record);
+                  return <Tag color={source.color} style={{ margin: 0 }}>{source.text}</Tag>;
+                })()}</div>
                 <div>延迟: {record.delay === -1 || record.status === 'unknown' ? '-' : <Text type={record.delay > 300 ? 'warning' : 'success'}>{record.delay} ms</Text>}</div>
                 <div>速度: {record.speed ? <Text strong>{record.speed.toFixed(2)} MB/s</Text> : '-'}</div>
                 <div>画质: {record.resolution ? `${record.resolution} (${record.codec || ''})` : '-'}</div>
+                <div>推流: <Tag color={streamStatuses[record.id]?.running ? 'processing' : record.stream_enabled === 1 ? 'gold' : 'default'} style={{ margin: 0 }}>{streamStatuses[record.id]?.running ? '推流中' : record.stream_enabled === 1 ? '已启用' : '未启用'}</Tag></div>
                 <div style={{ gridColumn: '1 / -1' }}>最近测试: {record.last_tested_at ? <Text type="secondary">{formatBeijingTime(record.last_tested_at)}</Text> : '-'}</div>
               </div>
 
@@ -779,6 +929,14 @@ export default function Sources() {
                   >
                     测试
                   </Button>
+                  <Button
+                    size="small"
+                    icon={streamStatuses[record.id]?.running ? <StopOutlined /> : <VideoCameraOutlined />}
+                    onClick={() => streamStatuses[record.id]?.running ? handleStopStream(record) : handleStartStream(record)}
+                  >
+                    {streamStatuses[record.id]?.running ? '停推' : '推流'}
+                  </Button>
+                  <Button size="small" icon={<LinkOutlined />} onClick={() => copyHlsUrl(record)}>HLS</Button>
                   <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
                   <Popconfirm title="确定要删除该线路吗？" onConfirm={() => handleDelete(record.id)}>
                     <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
@@ -828,6 +986,15 @@ export default function Sources() {
           </Form.Item>
           <Form.Item name="tvg_logo" label="台标 URL (选填)">
             <Input placeholder="http://.../logo.png" />
+          </Form.Item>
+          <Form.Item name="request_headers" label="请求头 JSON (选填)" tooltip='例如 {"User-Agent":"TiviMate/5.1.0","Referer":"https://example.com"}'>
+            <TextArea rows={3} placeholder='{"User-Agent":"TiviMate/5.1.0"}' />
+          </Form.Item>
+          <Form.Item name="catchup" label="回放属性 JSON (选填)" tooltip='例如 {"catchup":"default","catchup-source":"?playseek=${start}"}'>
+            <TextArea rows={3} placeholder='{"catchup":"default","catchup-source":"..."}' />
+          </Form.Item>
+          <Form.Item name="stream_enabled" label="加入 HLS 推流订阅" valuePropName="checked">
+            <Switch />
           </Form.Item>
           {isEditing && (
             <Form.Item name="status" label="当前可用状态">

@@ -1,7 +1,9 @@
 import express from 'express';
-import db, { run, query, queryOne } from '../db.js';
+import db, { run, query, queryOne, resolveStableChannelId } from '../db.js';
 import { authenticateToken } from '../middleware.js';
 import { runTestOnSources, testStatus } from '../tester.js';
+import { deduplicateSourcesByUrl } from '../deduplicate.js';
+import { parseM3u, parseTxt, stringifyJsonObject } from '../playlist.js';
 
 const router = express.Router();
 
@@ -20,6 +22,7 @@ router.get('/stats', authenticateToken, (req, res) => {
     const categories = query(`
       SELECT 
         CASE 
+          WHEN s.origin = 'migu' THEN COALESCE(sub.name, '咪咕')
           WHEN s.subscription_id IS NULL THEN '手动导入' 
           ELSE sub.name 
         END as category, 
@@ -29,8 +32,8 @@ router.get('/stats', authenticateToken, (req, res) => {
         SUM(CASE WHEN s.status IS NULL OR s.status NOT IN ('active', 'inactive') THEN 1 ELSE 0 END) as unknownCount
       FROM sources s
       LEFT JOIN subscriptions sub ON s.subscription_id = sub.id
-      GROUP BY CASE WHEN s.subscription_id IS NULL THEN '手动导入' ELSE sub.name END
-      ORDER BY CASE WHEN s.subscription_id IS NULL THEN 0 ELSE 1 END ASC, sub.last_fetched_at DESC
+      GROUP BY CASE WHEN s.origin = 'migu' THEN COALESCE(sub.name, '咪咕') WHEN s.subscription_id IS NULL THEN '手动导入' ELSE sub.name END
+      ORDER BY CASE WHEN s.origin = 'migu' THEN 1 WHEN s.subscription_id IS NULL THEN 0 ELSE 2 END ASC, sub.last_fetched_at DESC
     `);
     const protocols = query('SELECT ipv_type, COUNT(*) as count FROM sources GROUP BY ipv_type');
 
@@ -100,7 +103,9 @@ router.get('/', authenticateToken, (req, res) => {
   }
   if (subscriptionId) {
     if (subscriptionId === 'manual') {
-      whereClauses.push('s.subscription_id IS NULL');
+      whereClauses.push("(s.subscription_id IS NULL AND COALESCE(s.origin, '') != 'migu')");
+    } else if (subscriptionId === 'migu') {
+      whereClauses.push("s.origin = 'migu'");
     } else {
       whereClauses.push('s.subscription_id = ?');
       params.push(parseInt(subscriptionId));
@@ -173,17 +178,18 @@ router.get('/:id', authenticateToken, (req, res) => {
 
 // 2. Create single source manually
 router.post('/', authenticateToken, (req, res) => {
-  const { name, url, category, tvg_logo } = req.body;
+  const { name, url, category, tvg_logo, request_headers, catchup, stream_enabled } = req.body;
   if (!name || !url || !category) {
     return res.status(400).json({ error: '名称、链接和分组不能为空' });
   }
 
   try {
     const ipvType = url.includes('[') || url.includes('ipv6') ? 'ipv6' : 'ipv4'; // basic check
+    const channelId = resolveStableChannelId({ name, category, origin: 'manual', url });
     run(`
-      INSERT INTO sources (name, url, category, origin, tvg_logo, ipv_type)
-      VALUES (?, ?, ?, 'manual', ?, ?)
-    `, name, url, category, tvg_logo || '', ipvType);
+      INSERT INTO sources (name, url, category, origin, channel_id, tvg_logo, request_headers, catchup, ipv_type, stream_enabled)
+      VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?)
+    `, name, url, category, channelId, tvg_logo || '', stringifyJsonObject(request_headers), stringifyJsonObject(catchup), ipvType, stream_enabled ? 1 : 0);
     
     res.status(201).json({ message: '直播源创建成功' });
   } catch (error) {
@@ -194,7 +200,7 @@ router.post('/', authenticateToken, (req, res) => {
 // 3. Edit single source
 router.put('/:id', authenticateToken, (req, res) => {
   const { id } = req.params;
-  const { name, url, category, tvg_logo, status } = req.body;
+  const { name, url, category, tvg_logo, request_headers, catchup, status, stream_enabled } = req.body;
 
   if (!name || !url || !category) {
     return res.status(400).json({ error: '名称、链接和分组不能为空' });
@@ -202,11 +208,13 @@ router.put('/:id', authenticateToken, (req, res) => {
 
   try {
     const ipvType = url.includes('[') || url.includes('ipv6') ? 'ipv6' : 'ipv4';
+    const fallbackChannelId = resolveStableChannelId({ name, category, origin: 'manual', url });
     run(`
       UPDATE sources 
-      SET name = ?, url = ?, category = ?, tvg_logo = ?, ipv_type = ?, status = ?
+      SET name = ?, url = ?, category = ?, tvg_logo = ?, request_headers = ?, catchup = ?, ipv_type = ?, status = ?, stream_enabled = ?,
+          channel_id = COALESCE(NULLIF(channel_id, ''), ?)
       WHERE id = ?
-    `, name, url, category, tvg_logo || '', ipvType, status || 'unknown', id);
+    `, name, url, category, tvg_logo || '', stringifyJsonObject(request_headers), stringifyJsonObject(catchup), ipvType, status || 'unknown', stream_enabled ? 1 : 0, fallbackChannelId, id);
 
     res.json({ message: '修改成功' });
   } catch (error) {
@@ -263,68 +271,23 @@ router.post('/import', authenticateToken, (req, res) => {
   }
 
   try {
-    const lines = content.split('\n');
     let imported = 0;
     let currentCategory = defaultCategory || '手动导入';
 
     db.exec('BEGIN TRANSACTION');
     try {
       const insertStmt = db.prepare(`
-        INSERT INTO sources (name, url, category, origin, ipv_type)
-        VALUES (?, ?, ?, 'manual', ?)
+        INSERT INTO sources (name, url, category, origin, channel_id, tvg_logo, request_headers, catchup, ipv_type)
+        VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?)
       `);
 
       const isM3u = content.includes('#EXTM3U');
-
-      if (isM3u) {
-        let currentItem = null;
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-
-          if (line.startsWith('#EXTINF:')) {
-            const commaIndex = line.lastIndexOf(',');
-            const name = commaIndex !== -1 ? line.substring(commaIndex + 1).trim() : '未命名';
-            const groupMatch = line.match(/group-title="([^"]+)"/i);
-            const category = groupMatch ? groupMatch[1].trim() : currentCategory;
-            currentItem = { name, category };
-          } else if (line.startsWith('#')) {
-            continue;
-          } else {
-            if (currentItem) {
-              const url = line;
-              const ipvType = url.includes('[') || url.includes('ipv6') ? 'ipv6' : 'ipv4';
-              insertStmt.run(currentItem.name, url, currentItem.category, ipvType);
-              imported++;
-              currentItem = null;
-            }
-          }
-        }
-      } else {
-        // TXT format
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line || line.startsWith('#')) continue;
-
-          if (line.includes('#genre#')) {
-            const parts = line.split(',');
-            if (parts.length > 0 && parts[0].trim()) {
-              currentCategory = parts[0].trim();
-            }
-            continue;
-          }
-
-          const separatorIndex = line.indexOf(',') !== -1 ? line.indexOf(',') : line.indexOf('，');
-          if (separatorIndex !== -1) {
-            const name = line.substring(0, separatorIndex).trim();
-            const url = line.substring(separatorIndex + 1).trim();
-            if (name && url && url.startsWith('http')) {
-              const ipvType = url.includes('[') || url.includes('ipv6') ? 'ipv6' : 'ipv4';
-              insertStmt.run(name, url, currentCategory, ipvType);
-              imported++;
-            }
-          }
-        }
+      const parsedItems = isM3u ? parseM3u(content, currentCategory) : parseTxt(content, currentCategory);
+      for (const item of parsedItems) {
+        const ipvType = item.url.includes('[') || item.url.includes('ipv6') ? 'ipv6' : 'ipv4';
+        const channelId = resolveStableChannelId({ ...item, origin: 'manual' });
+        insertStmt.run(item.name, item.url, item.category, channelId, item.tvg_logo || '', item.request_headers || '', item.catchup || '', ipvType);
+        imported++;
       }
 
       db.exec('COMMIT');
@@ -399,54 +362,11 @@ router.post('/defrost', authenticateToken, (req, res) => {
 // 9. One-click de-duplicate URLs in sources
 router.post('/deduplicate', authenticateToken, (req, res) => {
   try {
-    // Find duplicate URLs
-    const duplicates = query(`
-      SELECT url, COUNT(*) as count 
-      FROM sources 
-      GROUP BY url 
-      HAVING COUNT(*) > 1
-    `);
-
-    let totalDeleted = 0;
-    const idsToDelete = [];
-
-    db.exec('BEGIN TRANSACTION');
-    try {
-      for (const dup of duplicates) {
-        const sourcesWithUrl = query("SELECT id, subscription_id FROM sources WHERE url = ?", dup.url);
-        
-        // Sort: subscription first, then older (smaller id) first
-        sourcesWithUrl.sort((a, b) => {
-          const aIsSub = a.subscription_id !== null ? 1 : 0;
-          const bIsSub = b.subscription_id !== null ? 1 : 0;
-          if (aIsSub !== bIsSub) {
-            return bIsSub - aIsSub; // subscription (1) before manual (0)
-          }
-          return a.id - b.id; // older id first
-        });
-
-        // The first one is kept, the rest are deleted
-        const toDelete = sourcesWithUrl.slice(1).map(s => s.id);
-        idsToDelete.push(...toDelete);
-      }
-
-      if (idsToDelete.length > 0) {
-        // Delete in batches of 500
-        const batchSize = 500;
-        for (let i = 0; i < idsToDelete.length; i += batchSize) {
-          const batch = idsToDelete.slice(i, i + batchSize);
-          const placeholders = batch.map(() => '?').join(',');
-          run(`DELETE FROM sources WHERE id IN (${placeholders})`, ...batch);
-        }
-        totalDeleted = idsToDelete.length;
-      }
-      db.exec('COMMIT');
-    } catch (txErr) {
-      db.exec('ROLLBACK');
-      throw txErr;
-    }
-
-    res.json({ message: `成功完成去重！共清理了 ${totalDeleted} 个重复的直播流地址。` });
+    const result = deduplicateSourcesByUrl();
+    res.json({
+      message: `成功完成去重！共清理了 ${result.deleted} 个重复的直播流地址。`,
+      ...result
+    });
   } catch (error) {
     res.status(500).json({ error: '去重操作失败: ' + error.message });
   }

@@ -42,44 +42,47 @@ function getExportCategorySortInfo(category = '') {
   if (categoryMatchesAny(text, ['港澳台', '港台', '香港', '澳门', '台湾', 'hk', 'hongkong', 'macau', 'taiwan', 'tw'])) {
     return { groupRank: 3, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['日本', 'jp', 'japan'])) {
+  if (normalized === 'us' || categoryMatchesAny(text, ['美国', '美洲', 'usa', 'unitedstates', 'united states'])) {
     return { groupRank: 4, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['韩国', 'kr', 'korea'])) {
+  if (categoryMatchesAny(text, ['日本', 'jp', 'japan'])) {
     return { groupRank: 5, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['国际', '海外', '境外', 'world', 'global', 'international', 'foreign'])) {
+  if (categoryMatchesAny(text, ['韩国', 'kr', 'korea'])) {
     return { groupRank: 6, provinceRank: -1, normalized };
+  }
+  if (categoryMatchesAny(text, ['国际', '海外', '境外', 'world', 'global', 'international', 'foreign'])) {
+    return { groupRank: 7, provinceRank: -1, normalized };
   }
 
   const provinceRank = PROVINCE_CATEGORY_ORDER.findIndex(name => text.includes(name.toLowerCase()));
   if (provinceRank !== -1) {
-    return { groupRank: 7, provinceRank, normalized };
+    return { groupRank: 8, provinceRank, normalized };
   }
 
   if (categoryMatchesAny(text, ['景区', '风景', '旅游'])) {
-    return { groupRank: 8, provinceRank: -1, normalized };
-  }
-  if (categoryMatchesAny(text, ['直播', 'live'])) {
     return { groupRank: 9, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['电影', '影院', '影视', 'movie', 'film'])) {
+  if (categoryMatchesAny(text, ['直播', 'live'])) {
     return { groupRank: 10, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['广播', '电台', 'radio'])) {
+  if (categoryMatchesAny(text, ['电影', '影院', '影视', 'movie', 'film'])) {
     return { groupRank: 11, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['音乐', 'music', 'mv', 'mtv'])) {
+  if (categoryMatchesAny(text, ['广播', '电台', 'radio'])) {
     return { groupRank: 12, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['游戏', '电竞', 'game'])) {
+  if (categoryMatchesAny(text, ['音乐', 'music', 'mv', 'mtv'])) {
     return { groupRank: 13, provinceRank: -1, normalized };
   }
-  if (categoryMatchesAny(text, ['其它', '其他', '未分类', 'misc'])) {
+  if (categoryMatchesAny(text, ['游戏', '电竞', 'game'])) {
     return { groupRank: 14, provinceRank: -1, normalized };
   }
+  if (categoryMatchesAny(text, ['其它', '其他', '未分类', 'misc'])) {
+    return { groupRank: 15, provinceRank: -1, normalized };
+  }
 
-  return { groupRank: 15, provinceRank: -1, normalized };
+  return { groupRank: 16, provinceRank: -1, normalized };
 }
 
 function compareExportCategories(a = '', b = '') {
@@ -127,6 +130,7 @@ export default function Publish() {
       // Setup initial form
       form.setFieldsValue({
         mode: setRes.data.llmDefaultMode || 'original',
+        delivery: 'normal',
         format: 'm3u',
         ipv: 'all',
         only_active: true,
@@ -148,7 +152,13 @@ export default function Publish() {
     
     // Build path
     let path = '';
-    if (values.ipv === 'all') {
+    if (values.delivery === 'hls') {
+      if (values.ipv === 'all') {
+        path = values.format === 'm3u' ? '/hls/m3u' : '/hls/txt';
+      } else {
+        path = `/hls/${values.ipv}/${values.format}`;
+      }
+    } else if (values.ipv === 'all') {
       path = values.format === 'm3u' ? '/m3u' : '/txt';
     } else {
       path = `/${values.ipv}/${values.format}`;
@@ -161,25 +171,25 @@ export default function Publish() {
       params.push(`token=${token}`);
     }
 
-    if (values.mode === 'optimized') {
+    if (values.delivery !== 'hls' && values.mode === 'optimized') {
       params.push('mode=optimized');
     }
     
-    if (values.only_active) {
+    if (values.delivery !== 'hls' && values.only_active) {
       params.push('only_active=1');
-    } else {
+    } else if (values.delivery !== 'hls') {
       params.push('only_active=0');
     }
 
-    if (values.limit_per_channel > 0) {
+    if (values.delivery !== 'hls' && values.limit_per_channel > 0) {
       params.push(`limit_per_channel=${values.limit_per_channel}`);
     }
 
-    if (values.selectedCategories && values.selectedCategories.length > 0) {
+    if (values.delivery !== 'hls' && values.selectedCategories && values.selectedCategories.length > 0) {
       params.push(`categories=${values.selectedCategories.join(',')}`);
     }
 
-    if (values.selectedIsps && values.selectedIsps.length > 0) {
+    if (values.delivery !== 'hls' && values.selectedIsps && values.selectedIsps.length > 0) {
       params.push(`isp=${values.selectedIsps.join(',')}`);
     }
 
@@ -223,6 +233,13 @@ export default function Publish() {
                 <Radio.Group buttonStyle="solid" className="responsive-option-group">
                   <Radio.Button value="original">原始直播源 (原始数据)</Radio.Button>
                   <Radio.Button value="optimized">优化直播源 (大模型归一化)</Radio.Button>
+                </Radio.Group>
+              </Form.Item>
+
+              <Form.Item name="delivery" label="订阅类型">
+                <Radio.Group buttonStyle="solid" className="responsive-option-group">
+                  <Radio.Button value="normal">普通直连订阅</Radio.Button>
+                  <Radio.Button value="hls">HLS 推流订阅</Radio.Button>
                 </Radio.Group>
               </Form.Item>
 

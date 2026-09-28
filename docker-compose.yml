@@ -4,16 +4,25 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:22-alpine}
+        NODE_IMAGE: ${NODE_IMAGE:-docker.1ms.run/library/node:22-alpine}
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
         ALPINE_MIRROR: ${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
     container_name: iptv-admin
     ports:
-      - "4010:4010"
+      - "${HOST_PORT:-4010}:${PORT:-4010}"
     volumes:
       - ./data:/app/data
     environment:
-      - PORT=4010
-      - JWT_SECRET=iptv-admin-secret-2026
-      - DATABASE_PATH=/app/data/iptv.sqlite
+      - PORT=${PORT:-4010}
+      - JWT_SECRET=${JWT_SECRET:-iptv-admin-secret-2026}
+      - DATABASE_PATH=${DATABASE_PATH:-/app/data/iptv.sqlite}
+      - TZ=${TZ:-Asia/Shanghai}
+      - SCHEDULER_TIMEZONE=${SCHEDULER_TIMEZONE:-Asia/Shanghai}
+      - MIGU_BASE_URL=${MIGU_BASE_URL:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-}
+      - LLM_DEFAULT_MODE=${LLM_DEFAULT_MODE:-original}
+      - LLM_CHUNK_SIZE=${LLM_CHUNK_SIZE:-80}
     restart: always

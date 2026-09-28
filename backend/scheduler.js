@@ -12,9 +12,12 @@ let tasks = {
   optimize: null
 };
 
+const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'Asia/Shanghai';
+const CRON_OPTIONS = { timezone: SCHEDULER_TIMEZONE };
+
 // Log helper
 function logSchedule(name, expression) {
-  console.log(`[Scheduler] Scheduled task [${name}] with cron expression: "${expression}"`);
+  console.log(`[Scheduler] Scheduled task [${name}] with cron expression: "${expression}" (${SCHEDULER_TIMEZONE})`);
 }
 
 /**
@@ -53,7 +56,7 @@ export function initScheduler() {
       } catch (err) {
         console.error('[Scheduler] Scheduled subscription sync failed:', err);
       }
-    });
+    }, CRON_OPTIONS);
     logSchedule('sync', syncExpression);
   } else if (syncExpression) {
     console.error(`[Scheduler] Invalid cron expression for syncCron: "${syncExpression}"`);
@@ -64,14 +67,14 @@ export function initScheduler() {
     tasks.test = cron.schedule(testExpression, async () => {
       console.log('[Scheduler] Starting scheduled channel speed test...');
       try {
-        const sources = query('SELECT id, name, url, fail_count, frozen_until FROM sources');
+        const sources = query('SELECT id, name, url, origin, fail_count, frozen_until FROM sources');
         if (sources.length > 0) {
           await runTestOnSources(sources);
         }
       } catch (err) {
         console.error('[Scheduler] Scheduled channel test failed:', err);
       }
-    });
+    }, CRON_OPTIONS);
     logSchedule('test', testExpression);
   } else if (testExpression) {
     console.error(`[Scheduler] Invalid cron expression for testCron: "${testExpression}"`);
@@ -86,23 +89,25 @@ export function initScheduler() {
       } catch (err) {
         console.error('[Scheduler] Scheduled EPG sync failed:', err);
       }
-    });
+    }, CRON_OPTIONS);
     logSchedule('epg', epgExpression);
   } else if (epgExpression) {
     console.error(`[Scheduler] Invalid cron expression for epgCron: "${epgExpression}"`);
   }
 
-  // 4. LLM Optimization cron (optional — only runs if configured)
+  // 4. LLM incremental optimization cron (optional — only runs if configured)
   if (optimizeExpression && cron.validate(optimizeExpression)) {
     tasks.optimize = cron.schedule(optimizeExpression, async () => {
-      console.log('[Scheduler] Starting scheduled LLM optimization...');
+      console.log('[Scheduler] Starting scheduled incremental LLM optimization...');
       try {
-        await runLlmOptimization();
+        await runLlmOptimization({ incremental: true });
       } catch (err) {
-        console.error('[Scheduler] Scheduled LLM optimization failed:', err);
+        console.error('[Scheduler] Scheduled incremental LLM optimization failed:', err);
       }
-    });
+    }, CRON_OPTIONS);
     logSchedule('optimize', optimizeExpression);
+  } else if (optimizeExpression) {
+    console.error(`[Scheduler] Invalid cron expression for optimizeCron: "${optimizeExpression}"`);
   }
 }
 

@@ -1,16 +1,27 @@
 import { useState, useEffect } from 'react';
 import { 
   Tabs, Table, Button, Modal, Form, Input, Switch, 
-  Space, Card, Tooltip, message, Popconfirm, Badge, Typography, Divider
+  Space, Card, Tooltip, message, Popconfirm, Badge, Typography, Divider, Tag, Select
 } from 'antd';
 import { 
   PlusOutlined, SyncOutlined, EditOutlined, DeleteOutlined, 
   CopyOutlined, InfoCircleOutlined, CloudDownloadOutlined 
 } from '@ant-design/icons';
 import api from '../utils/api';
+import { API_BASE_URL } from '../utils/api';
 import { formatBeijingTime } from '../utils/time';
 
 const { Title, Text, Paragraph } = Typography;
+
+const USER_AGENT_OPTIONS = [
+  { label: 'TiviMate', value: 'TiviMate/5.1.0' },
+  { label: 'OTT Navigator', value: 'OTT Navigator/1.7.0' },
+  { label: 'PotPlayer', value: 'PotPlayer/1.7.21902' },
+  { label: 'ExoPlayer', value: 'ExoPlayerLib/2.18.1' },
+  { label: 'VLC', value: 'VLC/3.0.20 LibVLC/3.0.20' },
+  { label: 'Android TV Browser', value: 'Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 Chrome/120.0 Safari/537.36' },
+  { label: 'FFmpeg/Lavf', value: 'Lavf/58.76.100' }
+];
 
 export default function Subscriptions() {
   const [activeTab, setActiveTab] = useState('subs');
@@ -23,10 +34,25 @@ export default function Subscriptions() {
   const [epgModalOpen, setEpgModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
+  const [subModalType, setSubModalType] = useState<'standard' | 'migu'>('standard');
+  const [accountTesting, setAccountTesting] = useState(false);
+  const [syncingOfficial, setSyncingOfficial] = useState(false);
 
   // Forms
   const [subForm] = Form.useForm();
   const [epgForm] = Form.useForm();
+
+  const handleSyncOfficial = async () => {
+    setSyncingOfficial(true);
+    try {
+      const res = await api.post('/api/subscriptions/sync-official');
+      message.success(res.data?.message || '官方直采源同步成功');
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '同步官方直采源失败');
+    } finally {
+      setSyncingOfficial(false);
+    }
+  };
 
   // Load subscriptions
   const fetchSubscriptions = async () => {
@@ -69,21 +95,38 @@ export default function Subscriptions() {
   }, [activeTab]);
 
   // CRUD for Subscriptions
-  const openSubEdit = (record: any = null) => {
+  const openSubEdit = (record: any = null, type: 'standard' | 'migu' = 'standard') => {
     if (record) {
+      const recordType = record.source_type === 'migu' ? 'migu' : 'standard';
       setIsEditing(true);
       setEditingItem(record);
+      setSubModalType(recordType);
       subForm.setFieldsValue({
         name: record.name,
         url: record.url,
         user_agent: record.user_agent,
-        auto_update: record.auto_update === 1
+        source_type: recordType,
+        auto_update: record.auto_update === 1,
+        migu_base_url: record.migu_base_url,
+        migu_user_id: record.migu_user_id,
+        migu_token: record.migu_token,
+        migu_rate_type: record.migu_rate_type || '3',
+        migu_enable_h265: record.migu_enable_h265 !== 0,
+        migu_enable_hdr: record.migu_enable_hdr === 1
       });
     } else {
+      setSubModalType(type);
       setIsEditing(false);
       setEditingItem(null);
       subForm.resetFields();
-      subForm.setFieldsValue({ auto_update: true });
+      subForm.setFieldsValue({
+        source_type: type,
+        name: type === 'migu' ? '咪咕' : undefined,
+        auto_update: true,
+        migu_rate_type: '3',
+        migu_enable_h265: true,
+        migu_enable_hdr: false
+      });
     }
     setSubModalOpen(true);
   };
@@ -126,6 +169,46 @@ export default function Subscriptions() {
     } catch (err: any) {
       const errMsg = err.response?.data?.error || '同步失败';
       message.error({ content: errMsg, key: 'sync_sub' });
+    }
+  };
+
+  const testMiguAccount = async () => {
+    const values = subForm.getFieldsValue();
+    if (!values.migu_user_id || !values.migu_token) {
+      message.warning('请先填写咪咕 UserId 和 Token');
+      return;
+    }
+
+    setAccountTesting(true);
+    try {
+      const res = await api.post('/api/migu/test-account', {
+        userId: values.migu_user_id,
+        token: values.migu_token,
+        rateType: values.migu_rate_type || 4,
+        enableH265: values.migu_enable_h265,
+        enableHdr: values.migu_enable_hdr,
+        userAgent: values.user_agent
+      });
+      const result = res.data;
+      const content = (
+        <Space orientation="vertical" size={4}>
+          <Text>{result.message}</Text>
+          {result.probeName && <Text type="secondary">测试频道：{result.probeName} ({result.probePid})</Text>}
+          <Text type="secondary">请求画质：{result.requestedRateLabel || result.requestedRateType}</Text>
+          {result.actualRateLabel && <Text type="secondary">实际返回：{result.actualRateLabel}</Text>}
+          {result.auth?.description && <Text type="secondary">咪咕提示：{result.auth.description}</Text>}
+        </Space>
+      );
+
+      if (result.selectedQualityAuthorized) {
+        Modal.success({ title: '当前画质测试通过', content });
+      } else {
+        Modal.warning({ title: result.valid ? '账号有效，但未获取到当前画质' : '咪咕账号测试未通过', content });
+      }
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '测试咪咕账号失败');
+    } finally {
+      setAccountTesting(false);
     }
   };
 
@@ -222,24 +305,32 @@ export default function Subscriptions() {
       dataIndex: 'name',
       key: 'name',
       align: 'center' as const,
-      render: (text: string) => <Text strong>{text}</Text>
+      render: (text: string, record: any) => (
+        <Space size={6}>
+          <Text strong>{text}</Text>
+          {record.source_type === 'migu' && <Tag color="purple">咪咕</Tag>}
+        </Space>
+      )
     },
     {
       title: '订阅 URL',
       dataIndex: 'url',
       key: 'url',
       responsive: ['md'] as any,
-      render: (url: string) => (
-        <Tooltip title={`点击复制: ${url}`}>
+      render: (url: string, record: any) => {
+        const displayUrl = record.source_type === 'migu' ? record.migu_base_url : url;
+        return (
+        <Tooltip title={`点击复制: ${displayUrl}`}>
           <div 
-            onClick={() => copyToClipboard(url)}
+            onClick={() => copyToClipboard(displayUrl)}
             className="url-clickable-cell"
             style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}
           >
-            {url}
+            {displayUrl}
           </div>
         </Tooltip>
-      )
+        );
+      }
     },
     {
       title: '自动更新',
@@ -288,7 +379,12 @@ export default function Subscriptions() {
       dataIndex: 'name',
       key: 'name',
       align: 'center' as const,
-      render: (text: string) => <Text strong>{text}</Text>
+      render: (text: string, record: any) => (
+        <Space size={6}>
+          <Text strong>{text}</Text>
+          {record.source_type === 'migu' && <Tag color="purple">咪咕</Tag>}
+        </Space>
+      )
     },
     {
       title: 'XML 链接',
@@ -326,15 +422,19 @@ export default function Subscriptions() {
       align: 'center' as const,
       render: (record: any) => (
         <Space size="middle">
-          <Tooltip title="立即拉取">
+          <Tooltip title={record.source_type === 'migu' ? '同步所有咪咕频道的 EPG' : '立即拉取'}>
             <Button size="small" type="text" icon={<SyncOutlined />} onClick={() => syncEpgSingle()} />
           </Tooltip>
-          <Tooltip title="编辑">
-            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEpgEdit(record)} />
-          </Tooltip>
-          <Popconfirm title="确定删除该 EPG 吗？" onConfirm={() => deleteEpg(record.id)}>
-            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
+          {record.source_type !== 'migu' && (
+            <>
+              <Tooltip title="编辑">
+                <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEpgEdit(record)} />
+              </Tooltip>
+              <Popconfirm title="确定删除该 EPG 吗？" onConfirm={() => deleteEpg(record.id)}>
+                <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+              </Popconfirm>
+            </>
+          )}
         </Space>
       )
     }
@@ -348,13 +448,23 @@ export default function Subscriptions() {
           <Title level={3} style={{ margin: 0 }}>订阅与 EPG 管理</Title>
           <Text type="secondary">配置直播源的外部 M3U 订阅和 EPG 电子节目单 XML 地址。</Text>
         </div>
-        <Button 
-          type="primary" 
-          icon={<PlusOutlined />} 
-          onClick={() => activeTab === 'subs' ? openSubEdit() : openEpgEdit()}
-        >
-          {activeTab === 'subs' ? '新增直播订阅' : '新增 EPG 订阅'}
-        </Button>
+        {activeTab === 'subs' ? (
+          <Space wrap>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openSubEdit(null, 'standard')}>
+              新增直播订阅
+            </Button>
+            <Button icon={<PlusOutlined />} onClick={() => openSubEdit(null, 'migu')}>
+              新增咪咕订阅
+            </Button>
+            <Button icon={<SyncOutlined />} onClick={handleSyncOfficial} loading={syncingOfficial}>
+              同步官方直采源
+            </Button>
+          </Space>
+        ) : (
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openEpgEdit()}>
+            新增 EPG 订阅
+          </Button>
+        )}
       </div>
 
       <Tabs 
@@ -385,7 +495,10 @@ export default function Subscriptions() {
                   {subsData.map((record) => (
                     <Card key={record.id} size="small" className="glass-card" style={{ marginBottom: 8 }}>
                       <div className="mobile-card-header">
-                        <Text strong className="mobile-card-title">{record.name}</Text>
+                        <Space size={6}>
+                          <Text strong className="mobile-card-title">{record.name}</Text>
+                          {record.source_type === 'migu' && <Tag color="purple">咪咕</Tag>}
+                        </Space>
                         <div className="mobile-status">{renderStatus(record.status, record.error_message)}</div>
                       </div>
                       
@@ -409,7 +522,7 @@ export default function Subscriptions() {
                           marginBottom: 8
                         }}
                       >
-                        {record.url}
+                        {record.source_type === 'migu' ? record.migu_base_url : record.url}
                       </div>
 
                       <div className="mobile-card-actions">
@@ -451,7 +564,10 @@ export default function Subscriptions() {
                   {epgData.map((record) => (
                     <Card key={record.id} size="small" className="glass-card" style={{ marginBottom: 8 }}>
                       <div className="mobile-card-header">
-                        <Text strong className="mobile-card-title">{record.name}</Text>
+                        <Space size={6}>
+                          <Text strong className="mobile-card-title">{record.name}</Text>
+                          {record.source_type === 'migu' && <Tag color="purple">咪咕</Tag>}
+                        </Space>
                         <div className="mobile-status">{renderStatus(record.status, record.error_message)}</div>
                       </div>
                       
@@ -478,11 +594,17 @@ export default function Subscriptions() {
 
                       <div className="mobile-card-actions">
                         <Space wrap>
-                          <Button size="small" icon={<SyncOutlined />} onClick={() => syncEpgSingle()}>拉取</Button>
-                          <Button size="small" icon={<EditOutlined />} onClick={() => openEpgEdit(record)}>编辑</Button>
-                          <Popconfirm title="确定删除该 EPG 吗？" onConfirm={() => deleteEpg(record.id)}>
-                            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
-                          </Popconfirm>
+                          <Button size="small" icon={<SyncOutlined />} onClick={() => syncEpgSingle()}>
+                            {record.source_type === 'migu' ? '同步' : '拉取'}
+                          </Button>
+                          {record.source_type !== 'migu' && (
+                            <>
+                              <Button size="small" icon={<EditOutlined />} onClick={() => openEpgEdit(record)}>编辑</Button>
+                              <Popconfirm title="确定删除该 EPG 吗？" onConfirm={() => deleteEpg(record.id)}>
+                                <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                              </Popconfirm>
+                            </>
+                          )}
                         </Space>
                       </div>
                     </Card>
@@ -499,7 +621,7 @@ export default function Subscriptions() {
                       <Badge status="processing" text={<Text strong>XMLTV 原生电子节目单 (XML)</Text>} />
                       <div className="responsive-button-row">
                         <Button icon={<CopyOutlined />} onClick={() => copyPublicLink('/epg.xml')}>复制 EPG XML 链接</Button>
-                        <Button icon={<CloudDownloadOutlined />} href={`${import.meta.env.DEV ? 'http://localhost:4010' : ''}/epg.xml`} target="_blank">下载 XML 文件</Button>
+                        <Button icon={<CloudDownloadOutlined />} href={`${API_BASE_URL}/epg.xml`} target="_blank">下载 XML 文件</Button>
                       </div>
                     </div>
                     <Divider style={{ margin: '8px 0' }} />
@@ -507,7 +629,7 @@ export default function Subscriptions() {
                       <Badge status="success" text={<Text strong>XMLTV 压缩电子节目单 (XML.GZ - 推荐)</Text>} />
                       <div className="responsive-button-row">
                         <Button icon={<CopyOutlined />} onClick={() => copyPublicLink('/epg.xml.gz')}>复制 EPG XML.GZ 链接</Button>
-                        <Button icon={<CloudDownloadOutlined />} href={`${import.meta.env.DEV ? 'http://localhost:4010' : ''}/epg.xml.gz`} target="_blank">下载 GZ 压缩文件</Button>
+                        <Button icon={<CloudDownloadOutlined />} href={`${API_BASE_URL}/epg.xml.gz`} target="_blank">下载 GZ 压缩文件</Button>
                       </div>
                     </div>
                   </Space>
@@ -520,22 +642,76 @@ export default function Subscriptions() {
 
       {/* Subscription Modal */}
       <Modal
-        title={isEditing ? '修改直播源订阅' : '添加直播源订阅'}
+        title={isEditing ? (subModalType === 'migu' ? '修改咪咕订阅' : '修改直播源订阅') : (subModalType === 'migu' ? '添加咪咕订阅' : '添加直播源订阅')}
         open={subModalOpen}
         onOk={saveSub}
         onCancel={() => setSubModalOpen(false)}
         destroyOnHidden
       >
         <Form form={subForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="source_type" hidden>
+            <Input />
+          </Form.Item>
           <Form.Item name="name" label="订阅名称" rules={[{ required: true, message: '请输入订阅名称' }]}>
-            <Input placeholder="例如: 某公益 m3u 订阅" />
+            <Input placeholder={subModalType === 'migu' ? '例如: 咪咕' : '例如: 某公益 m3u 订阅'} />
           </Form.Item>
-          <Form.Item name="url" label="订阅 URL 链接" rules={[{ required: true, message: '请输入订阅 URL' }]}>
-            <Input placeholder="http://.../playlist.m3u" />
-          </Form.Item>
-          <Form.Item name="user_agent" label="自定义 User-Agent (选填)">
-            <Input placeholder="Mozilla/5.0 ... (留空使用全局配置)" />
-          </Form.Item>
+          {subModalType === 'migu' ? (
+            <>
+              <Form.Item
+                name="migu_base_url"
+                label="播放代理公网地址"
+                rules={[{ required: true, message: '请输入播放代理公网地址' }]}
+              >
+                <Input placeholder="例如: https://iptv.example.com 或 http://192.168.1.10:4010" />
+              </Form.Item>
+              <Form.Item name="migu_user_id" label="咪咕 UserId (选填)">
+                <Input placeholder="会员高画质需要时填写" />
+              </Form.Item>
+              <Form.Item name="migu_token" label="咪咕 Token">
+                <Input.Password placeholder="会员高画质需要时填写" />
+              </Form.Item>
+              <Form.Item>
+                <Button loading={accountTesting} onClick={testMiguAccount}>
+                  测试当前画质
+                </Button>
+              </Form.Item>
+              <Form.Item name="migu_rate_type" label="默认画质" rules={[{ required: true, message: '请选择默认画质' }]}>
+                <Select>
+                  <Select.Option value="2">标清</Select.Option>
+                  <Select.Option value="3">高清</Select.Option>
+                  <Select.Option value="4">蓝光 / 1080p</Select.Option>
+                  <Select.Option value="7">原画 / 1080p+</Select.Option>
+                  <Select.Option value="9">尝试原画 / 4K</Select.Option>
+                </Select>
+              </Form.Item>
+              <Space wrap size="large">
+                <Form.Item name="migu_enable_h265" label="H.265" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name="migu_enable_hdr" label="HDR/Vivid" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+              </Space>
+              <Form.Item name="user_agent" label="User-Agent (选填)">
+                <Select
+                  showSearch
+                  allowClear
+                  placeholder="选择 User-Agent"
+                  options={USER_AGENT_OPTIONS}
+                  optionFilterProp="label"
+                />
+              </Form.Item>
+            </>
+          ) : (
+            <>
+              <Form.Item name="url" label="订阅 URL 链接" rules={[{ required: true, message: '请输入订阅 URL' }]}>
+                <Input placeholder="http://.../playlist.m3u" />
+              </Form.Item>
+              <Form.Item name="user_agent" label="自定义 User-Agent (选填)">
+                <Input placeholder="Mozilla/5.0 ... (留空使用全局配置)" />
+              </Form.Item>
+            </>
+          )}
           <Form.Item name="auto_update" label="开启自动定时同步" valuePropName="checked">
             <Switch />
           </Form.Item>
