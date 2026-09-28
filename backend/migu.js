@@ -510,7 +510,7 @@ async function requestMiguPlayUrl(pid, requestedRateType, config, options = {}) 
   const hdr = config.enableHdr ? '&4kvivid=true&2Kvivid=true&vivid=2' : '';
   const attempts = [];
 
-  async function requestWithRate(nextRateType) {
+  async function requestWithRate(nextRateType, useOtt = (Number(nextRateType) === 9)) {
     const params = new URLSearchParams({
       sign,
       rateType: String(nextRateType),
@@ -520,7 +520,7 @@ async function requestMiguPlayUrl(pid, requestedRateType, config, options = {}) 
       flvEnable: 'true',
       super4k: 'true'
     });
-    const suffix = `${h265}${hdr}${nextRateType === 9 ? '&ott=true' : ''}`;
+    const suffix = `${h265}${hdr}${useOtt ? '&ott=true' : ''}`;
     const data = await fetchJson(`${MIGU_PLAY_URL}?${params.toString()}${suffix}`, {
       headers: {
         ...buildPlayHeaders(pid, userId, token, nextRateType),
@@ -529,6 +529,7 @@ async function requestMiguPlayUrl(pid, requestedRateType, config, options = {}) 
     });
     attempts.push({
       requestedRateType: Number(nextRateType),
+      useOtt: !!useOtt,
       returnedRateType: Number(data?.body?.urlInfo?.rateType || 0) || null,
       rid: data?.rid || '',
       message: data?.body?.auth?.resultDesc || data?.msg || ''
@@ -537,21 +538,37 @@ async function requestMiguPlayUrl(pid, requestedRateType, config, options = {}) 
   }
 
   let data = await requestWithRate(rateType);
+
+  // 咪咕 4K 降级与三屏会员支持 (借鉴 akiralereal/iptv issue #117 / v4.8.0 / v4.16.0)：
+  // 若使用大屏策略 (ott=true) 请求 4K (rateType: 9) 遭到拒绝 (如三屏会员无大屏电视权益)，自动降级按手机端策略 (不带 ott) 重试 4K
+  if (Number(rateType) === 9 && (data?.rid === 'TIPS_NEED_MEMBER' || !data?.body?.urlInfo?.url)) {
+    const mobileData = await requestWithRate(9, false);
+    if (mobileData?.body?.urlInfo?.url) {
+      data = mobileData;
+    }
+  }
+
+  // 常规会员画质降级回退 (非 strictRate 模式下降级到 1080P 或 720P)
   if (data?.rid === 'TIPS_NEED_MEMBER' && !strictRate) {
     const suggestedRate = Number(data?.body?.urlInfo?.rateType || 3);
     rateType = suggestedRate > 4 ? 4 : Math.max(suggestedRate, 3);
-    data = await requestWithRate(rateType);
+    data = await requestWithRate(rateType, false);
   }
   if (data?.rid === 'TIPS_NEED_MEMBER' && !strictRate) {
     rateType = 3;
-    data = await requestWithRate(rateType);
+    data = await requestWithRate(rateType, false);
   }
 
   const rawUrl = data?.body?.urlInfo?.url;
   const resolvedPid = String(data?.body?.content?.contId || pid);
   const actualRateType = Number(data?.body?.urlInfo?.rateType || rateType);
   if (!rawUrl) {
-    throw new Error(data?.body?.auth?.resultDesc || data?.msg || data?.rid || '咪咕未返回播放地址');
+    let errDesc = data?.body?.auth?.resultDesc || data?.msg || data?.rid || '咪咕未返回播放地址';
+    // 借鉴 akiralereal/iptv issue #131：遇到版权保护时给出友好说明
+    if (errDesc.includes('节目播出调整') || errDesc.includes('播出调整')) {
+      errDesc += ' (咪咕版权临时屏蔽：通常为特定赛事版权保护，节目结束后自动恢复，可先切至其他源)';
+    }
+    throw new Error(errDesc);
   }
 
   return {
@@ -634,16 +651,54 @@ export async function getMiguPlaybackUrl(pid, requestedRateType, subscriptionId)
   return result.url;
 }
 
+export function extractMiguCredentials(text = '') {
+  if (!text || typeof text !== 'string') return { userId: '', token: '' };
+  const str = text.trim();
+
+  let userId = '';
+  const uidMatch = str.match(/(?:(?:user_?id|uid|msisdn)[=:\s]+|["'](?:user_?id|uid)["']\s*:\s*["'])([^;"'\s&]+)/i);
+  if (uidMatch) {
+    userId = uidMatch[1];
+  }
+
+  let token = '';
+  const tokenMatch = str.match(/(?:(?:user_?token|token|accesstoken|utoken)[=:\s]+|["'](?:user_?token|token)["']\s*:\s*["'])([^;"'\s&]+)/i);
+  if (tokenMatch) {
+    token = tokenMatch[1];
+  }
+
+  return { userId, token };
+}
+
 export async function testMiguAccount({
   userId = '',
   token = '',
+  cookie = '',
   rateType = 4,
   enableH265 = true,
   enableHdr = false,
   userAgent = ''
 } = {}) {
-  const normalizedUserId = String(userId || '').trim();
-  const normalizedToken = String(token || '').trim();
+  let normalizedUserId = String(userId || '').trim();
+  let normalizedToken = String(token || '').trim();
+
+  // 智能 Cookie 提取：支持粘贴 Cookie/Headers 自动解析
+  if (cookie) {
+    const extracted = extractMiguCredentials(cookie);
+    if (extracted.userId && !normalizedUserId) normalizedUserId = extracted.userId;
+    if (extracted.token && !normalizedToken) normalizedToken = extracted.token;
+  }
+  if (normalizedToken.includes(';') || normalizedToken.includes('=')) {
+    const extracted = extractMiguCredentials(normalizedToken);
+    if (extracted.userId && !normalizedUserId) normalizedUserId = extracted.userId;
+    if (extracted.token) normalizedToken = extracted.token;
+  }
+  if (normalizedUserId.includes(';') || normalizedUserId.includes('=')) {
+    const extracted = extractMiguCredentials(normalizedUserId);
+    if (extracted.userId) normalizedUserId = extracted.userId;
+    if (extracted.token && !normalizedToken) normalizedToken = extracted.token;
+  }
+
   const requestedRateType = Number(rateType || 4);
   const probePid = requestedRateType >= 7 ? MIGU_4K_TEST_PID : MIGU_ACCOUNT_TEST_PID;
   const probeName = requestedRateType >= 7 ? 'CCTV5体育' : 'CCTV-1';
@@ -653,7 +708,7 @@ export async function testMiguAccount({
       valid: false,
       member: false,
       highQualityAuthorized: false,
-      message: '请先填写咪咕 UserId 和 Token',
+      message: '请先填写咪咕 UserId 和 Token（支持直接粘贴完整 Cookie 自动解析）',
       hasUser: !!normalizedUserId,
       hasToken: !!normalizedToken,
       requestedRateType,
@@ -678,15 +733,23 @@ export async function testMiguAccount({
     const highQualityAuthorized = actualRateType >= 4;
     const selectedQualityAuthorized = actualRateType >= requestedRateType;
 
+    let policy = '';
+    const lastAttempt = result.attempts?.[result.attempts.length - 1];
+    if (actualRateType === 9) {
+      policy = lastAttempt?.useOtt ? '大屏 4K 策略' : '手机端 4K 策略 (投屏专享回退)';
+    }
+
     return {
       valid: true,
       member: highQualityAuthorized,
       highQualityAuthorized,
       selectedQualityAuthorized,
+      policy,
+      extractedUserId: normalizedUserId,
       message: selectedQualityAuthorized
-        ? `当前画质鉴权通过，已获取 ${result.actualRateLabel}`
+        ? `账号鉴权通过！${policy ? `(${policy}) ` : ''}已成功获取 ${result.actualRateLabel}`
         : highQualityAuthorized
-          ? `账号鉴权通过，但当前测试频道未获取到 ${result.requestedRateLabel}，实际返回 ${result.actualRateLabel}`
+          ? `账号鉴权通过，但当前测试频道实际返回 ${result.actualRateLabel}`
           : `账号可用，但未获取到会员高画质授权，实际返回 ${result.actualRateLabel}`,
       probePid,
       probeName,
@@ -701,11 +764,59 @@ export async function testMiguAccount({
       attempts: result.attempts
     };
   } catch (error) {
+    const errorMsg = String(error.message || '');
+
+    // 智能分级探测：若选了 4K 但被拒绝，进一步自动探测是否具备 1080P 会员权益，避免误判账号失效
+    if (requestedRateType >= 7 && (errorMsg.includes('TIPS_NEED_MEMBER') || errorMsg.includes('会员'))) {
+      try {
+        const fallback1080p = await requestMiguPlayUrl(MIGU_ACCOUNT_TEST_PID, 4, config, { strictRate: true });
+        if (Number(fallback1080p?.actualRateType || 0) >= 4) {
+          return {
+            valid: true,
+            member: true,
+            highQualityAuthorized: true,
+            selectedQualityAuthorized: false,
+            maxAuthorizedRate: 4,
+            maxAuthorizedLabel: '蓝光 (1080P)',
+            extractedUserId: normalizedUserId,
+            message: `账号有效！已获得蓝光 (1080P) 会员权限。当前选中的 4K 需开通大屏 VIP 或该频道暂无 4K 流，建议将默认画质设为【蓝光 / 1080p】。`,
+            probePid: MIGU_ACCOUNT_TEST_PID,
+            probeName: 'CCTV-1',
+            requestedRateType,
+            requestedRateLabel: getRateTypeLabel(requestedRateType),
+            actualRateType: 4,
+            actualRateLabel: '蓝光 (1080P)',
+            hasUser: true,
+            hasToken: true
+          };
+        }
+      } catch {
+        // Fallback 1080p failed as well
+      }
+    }
+
+    if (errorMsg.includes('TIPS_NEED_MEMBER')) {
+      return {
+        valid: true,
+        member: false,
+        highQualityAuthorized: false,
+        selectedQualityAuthorized: false,
+        extractedUserId: normalizedUserId,
+        message: '账号可用，但未开通咪咕会员权益（普通游客身份），最高可播放高清 720P。建议将默认画质设为【高清】。',
+        probePid,
+        probeName,
+        requestedRateType,
+        requestedRateLabel: getRateTypeLabel(requestedRateType),
+        hasUser: true,
+        hasToken: true
+      };
+    }
+
     return {
       valid: false,
       member: false,
       highQualityAuthorized: false,
-      message: error.message || '账号鉴权失败',
+      message: errorMsg || '账号鉴权失败，请检查 Token 是否有效',
       probePid,
       probeName,
       requestedRateType,

@@ -64,6 +64,7 @@ router.post('/test-account', authenticateToken, async (req, res) => {
     const result = await testMiguAccount({
       userId: req.body?.userId,
       token: req.body?.token,
+      cookie: req.body?.cookie,
       rateType: req.body?.rateType || 4,
       enableH265: req.body?.enableH265,
       enableHdr: req.body?.enableHdr,

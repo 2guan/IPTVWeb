@@ -174,36 +174,59 @@ export default function Subscriptions() {
 
   const testMiguAccount = async () => {
     const values = subForm.getFieldsValue();
-    if (!values.migu_user_id || !values.migu_token) {
-      message.warning('请先填写咪咕 UserId 和 Token');
+    const rawUserId = String(values.migu_user_id || '').trim();
+    const rawToken = String(values.migu_token || '').trim();
+
+    if (!rawUserId && !rawToken) {
+      message.warning('请先填写咪咕 UserId 和 Token，或直接粘贴 Cookie');
       return;
     }
 
     setAccountTesting(true);
     try {
       const res = await api.post('/api/migu/test-account', {
-        userId: values.migu_user_id,
-        token: values.migu_token,
+        userId: rawUserId,
+        token: rawToken,
         rateType: values.migu_rate_type || 4,
         enableH265: values.migu_enable_h265,
         enableHdr: values.migu_enable_hdr,
         userAgent: values.user_agent
       });
       const result = res.data;
+
+      // 如果自动解析出了 userId，顺便回填表单
+      if (result.extractedUserId && result.extractedUserId !== rawUserId) {
+        subForm.setFieldsValue({ migu_user_id: result.extractedUserId });
+      }
+
       const content = (
-        <Space orientation="vertical" size={4}>
-          <Text>{result.message}</Text>
-          {result.probeName && <Text type="secondary">测试频道：{result.probeName} ({result.probePid})</Text>}
-          <Text type="secondary">请求画质：{result.requestedRateLabel || result.requestedRateType}</Text>
-          {result.actualRateLabel && <Text type="secondary">实际返回：{result.actualRateLabel}</Text>}
-          {result.auth?.description && <Text type="secondary">咪咕提示：{result.auth.description}</Text>}
+        <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
+          <Paragraph style={{ marginBottom: 4, fontWeight: 500 }}>{result.message}</Paragraph>
+          {result.policy && (
+            <div><Tag color="cyan">取流策略：{result.policy}</Tag></div>
+          )}
+          {result.probeName && (
+            <Text type="secondary">测试探测频道：{result.probeName} (ID: {result.probePid})</Text>
+          )}
+          <Text type="secondary">目标画质：{result.requestedRateLabel || result.requestedRateType}</Text>
+          {result.actualRateLabel && (
+            <Text type="secondary">实际获得：{result.actualRateLabel}</Text>
+          )}
+          {result.maxAuthorizedLabel && (
+            <Text type="warning">账号最高权益：{result.maxAuthorizedLabel}</Text>
+          )}
+          {result.auth?.description && (
+            <Text type="secondary">平台原话：{result.auth.description}</Text>
+          )}
         </Space>
       );
 
-      if (result.selectedQualityAuthorized) {
-        Modal.success({ title: '当前画质测试通过', content });
+      if (result.valid && result.selectedQualityAuthorized) {
+        Modal.success({ title: '咪咕账号权益测试通过', content });
+      } else if (result.valid) {
+        Modal.info({ title: '账号有效（当前画质受限）', content });
       } else {
-        Modal.warning({ title: result.valid ? '账号有效，但未获取到当前画质' : '咪咕账号测试未通过', content });
+        Modal.error({ title: '咪咕账号鉴权未通过', content });
       }
     } catch (err: any) {
       message.error(err.response?.data?.error || '测试咪咕账号失败');
@@ -664,15 +687,49 @@ export default function Subscriptions() {
               >
                 <Input placeholder="例如: https://iptv.example.com 或 http://192.168.1.10:4010" />
               </Form.Item>
-              <Form.Item name="migu_user_id" label="咪咕 UserId (选填)">
-                <Input placeholder="会员高画质需要时填写" />
+              <Card size="small" style={{ marginBottom: 16, background: '#f8fafc', borderColor: '#e2e8f0' }}>
+                <Space direction="vertical" style={{ width: '100%' }} size={4}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    💡 快捷导入：支持直接粘贴包含 userId 与 userToken 的完整 Cookie 或抓包请求头
+                  </Text>
+                  <Input.Search
+                    placeholder="粘贴 Cookie 或请求头后点击一键解析"
+                    enterButton="一键解析填入"
+                    allowClear
+                    onSearch={(val) => {
+                      if (!val) return;
+                      const uidMatch = val.match(/(?:(?:user_?id|uid|msisdn)[=:\s]+|["'](?:user_?id|uid)["']\s*:\s*["'])([^;"'\s&]+)/i);
+                      const tokMatch = val.match(/(?:(?:user_?token|token|accesstoken|utoken)[=:\s]+|["'](?:user_?token|token)["']\s*:\s*["'])([^;"'\s&]+)/i);
+                      if (uidMatch || tokMatch) {
+                        const newValues: any = {};
+                        if (uidMatch) newValues.migu_user_id = uidMatch[1];
+                        if (tokMatch) newValues.migu_token = tokMatch[1];
+                        subForm.setFieldsValue(newValues);
+                        message.success(`已成功解析并填入：${uidMatch ? 'UserId ' : ''}${tokMatch ? 'Token' : ''}`);
+                      } else {
+                        message.warning('未在粘贴内容中匹配到有效的 UserId 或 Token 格式');
+                      }
+                    }}
+                  />
+                </Space>
+              </Card>
+              <Form.Item
+                name="migu_user_id"
+                label="咪咕 UserId"
+                tooltip="会员蓝光/4K画质鉴权必需。可从手机 App 抓包或网页端 Cookie 中的 userId / uid 字段获取"
+              >
+                <Input placeholder="输入或粘贴 UserId" allowClear />
               </Form.Item>
-              <Form.Item name="migu_token" label="咪咕 Token">
-                <Input.Password placeholder="会员高画质需要时填写" />
+              <Form.Item
+                name="migu_token"
+                label="咪咕 Token"
+                tooltip="会员蓝光/4K画质鉴权必需。可从网页或抓包 Cookie/请求头中的 userToken / token 字段获取"
+              >
+                <Input.Password placeholder="输入或粘贴 Token" allowClear />
               </Form.Item>
-              <Form.Item>
-                <Button loading={accountTesting} onClick={testMiguAccount}>
-                  测试当前画质
+              <Form.Item style={{ marginBottom: 12 }}>
+                <Button type="dashed" loading={accountTesting} onClick={testMiguAccount} block>
+                  🔍 检测当前账号与目标画质权益
                 </Button>
               </Form.Item>
               <Form.Item name="migu_rate_type" label="默认画质" rules={[{ required: true, message: '请选择默认画质' }]}>
